@@ -34,7 +34,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.0"
+ROUTINE_VERSION = "1.1.1"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -186,10 +186,14 @@ def main() -> int:
             f"sentinel [heartbeat-fired:T+{elapsed_t0_min}m] on its own line. "
             "Six lines total.\n</system-reminder>"
         )
+        # v1.1.1: preserve LAST_PTU_TAG_SEC across the auto-advance so the
+        # PostToolUse rate-limit window survives an OVERDUE-2X recovery.
+        last_ptu_tag = anchor.get("LAST_PTU_TAG_SEC", "0")
         write_anchor(session_id, {
             "T0": str(t0),
             "LAST_HEARTBEAT": str(now),
             "TIER": tier,
+            "LAST_PTU_TAG_SEC": last_ptu_tag,
         })
 
     emit(ctx)

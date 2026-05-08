@@ -48,7 +48,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.0"
+ROUTINE_VERSION = "1.1.1"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -253,10 +253,15 @@ def main() -> int:
         return 0
 
     now = int(started)
+    # v1.1.1: preserve LAST_PTU_TAG_SEC across the advance so the PostToolUse
+    # rate-limit window stays in force. Prior versions silently dropped it,
+    # which let an immediately-following PostToolUse re-emit before the
+    # 60-second rate-limit was due.
     write_anchor(session_id, {
         "T0": anchor.get("T0", "0"),
         "LAST_HEARTBEAT": str(now),
         "TIER": anchor.get("TIER", "T0"),
+        "LAST_PTU_TAG_SEC": anchor.get("LAST_PTU_TAG_SEC", "0"),
     })
 
     append_log({
