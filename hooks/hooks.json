@@ -1,0 +1,49 @@
+{
+  "description": "VC-RoE (Vibe Coding · Rules of Engagement) hooks: SessionStart injects the matching slice and writes the heartbeat anchor; UserPromptSubmit emits the elapsed-time clock tag and OVERDUE flags per D-MET-33; PostToolUse mirrors the clock tag during autonomous-work windows where no user prompt fires (added v1.1.0); Stop greps the assistant transcript for the heartbeat sentinel and advances LAST_HEARTBEAT (layered fail-safe per D-MET-41). Renamed from vc-roe at v1.0.0.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/stop.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
