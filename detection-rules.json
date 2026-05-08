@@ -1,0 +1,104 @@
+{
+  "version": "1.1.0",
+  "comment": "Detection rules for the VC-RoE (Vibe Coding · Rules of Engagement) plugin SessionStart hook. Renamed from vc-roe at v1.0.0 (2026-05-06). Editable without re-shipping the plugin code; bumps plugin.json version on push. Source basis: tier-model-v2.md sections 2 and 4, locked at D-MET-1..13. Note: oneshot_keywords and irreversible_action_keywords (tier-model-v2 section 4 step 8 msg_delta inputs) were removed at v0.1.1 because the SessionStart event has no first-user-message access; that scoring is architecturally incompatible with this hook contract. Regulatory keywords stay in because score_criticality reads them from CLAUDE.md at hook time.",
+  "regulatory_keywords": [
+    "DORA",
+    "MiFID",
+    "AIFMD",
+    "GDPR",
+    "AML",
+    "KYC",
+    "MNPI",
+    "regulator",
+    "audit-trail",
+    "compliance",
+    "HCMC",
+    "SFDR",
+    "MiCA",
+    "DPIA",
+    "LIA",
+    "ESMA",
+    "EBA",
+    "EIOPA",
+    "FATCA",
+    "CRS"
+  ],
+  "scope_signals": {
+    "S1_signals": [
+      ".git"
+    ],
+    "S2_signals": [
+      "decisions.md",
+      "docs/decisions.md",
+      "docs/adr",
+      "open-issues.md",
+      "docs/open-issues.md",
+      "handovers",
+      "docs/handovers"
+    ],
+    "S3_signals": [
+      "BUILD_LOG.md",
+      "RUNBOOK.md",
+      "COMPLIANCE.md",
+      "openapi.yaml",
+      "openapi.json",
+      "architecture.md"
+    ],
+    "S2_size_signals": {
+      "min_file_count": 200,
+      "min_git_age_days": 30
+    }
+  },
+  "criticality_signals": {
+    "C1_min_regulatory_hits": 1,
+    "C2_min_regulatory_hits": 2,
+    "C2_path_signals": [
+      "compliance",
+      "regulatory",
+      "dpia"
+    ],
+    "criticality_text_sources": [
+      "CLAUDE.md",
+      "README.md",
+      "docs/README.md"
+    ]
+  },
+  "tier_matrix": {
+    "S0": {
+      "C0": "T0",
+      "C1": "T1",
+      "C2": "T3"
+    },
+    "S1": {
+      "C0": "T1",
+      "C1": "T2",
+      "C2": "T3"
+    },
+    "S2": {
+      "C0": "T2",
+      "C1": "T2",
+      "C2": "T3"
+    },
+    "S3": {
+      "C0": "T3",
+      "C1": "T3",
+      "C2": "T3"
+    }
+  },
+  "auto_promotion_ceiling": "T3",
+  "max_walk_levels": 6,
+  "labels": {
+    "S0_C0": "ad-hoc, personal",
+    "S0_C1": "ad-hoc, professional",
+    "S0_C2": "ad-hoc, regulatory",
+    "S1_C0": "lightweight task, personal",
+    "S1_C1": "lightweight task, professional",
+    "S1_C2": "lightweight task, regulatory",
+    "S2_C0": "small project, personal",
+    "S2_C1": "small project, professional",
+    "S2_C2": "small project, regulatory",
+    "S3_C0": "serious project, personal",
+    "S3_C1": "serious project, professional",
+    "S3_C2": "serious regulatory project"
+  }
+}

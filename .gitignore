@@ -1,0 +1,26 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local testing artefacts
+/tmp/
+*.log
+
+# Secrets / local-only addon overrides
+# (the private operator-side addon never sits inside this repo)
+*.local.*
+.env
+.env.*
+private/
+local-addon/
