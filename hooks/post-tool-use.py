@@ -18,6 +18,21 @@ to avoid spamming when the assistant runs many tool calls back-to-back.
 At OVERDUE-2X, auto-advance LAST_HEARTBEAT to mirror the
 user-prompt-submit.py fail-safe semantics (D-MET-41).
 
+v1.1.1 (2026-05-09) F-8 closure: PostToolUse now mirrors stop.py's
+transcript-grep responsibility. Operational reality (confirmed via the
+[EXAMPLE-PROJ] session 38 hook log forensics): Claude Code fires Stop only at the
+end of an agent loop, not after every assistant turn. Heartbeat
+sentinels emitted in intermediate turns within a single agent loop are
+invisible to Stop until loop-end, leaving LAST_HEARTBEAT stale and
+producing repeated false OVERDUE alarms via PostToolUse. The fix: when
+PostToolUse runs, it reads the transcript and greps the agent-loop's
+assistant text for sentinels; if a sentinel newer than current
+LAST_HEARTBEAT is present, LAST_HEARTBEAT advances before the OVERDUE
+check, suppressing false alarms while preserving the existing fail-safe
+semantics. Sentinel freshness gates the advance (parsed minute must
+exceed current LAST_HEARTBEAT minute) so stale loop-history sentinels
+cannot mask a legitimate cadence miss.
+
 Pure stdlib. Never throws. Logs to ~/.claude/methodology-hook.log.
 Tier-aware: short-circuits to no-op at T0/T1.
 """
@@ -25,6 +40,7 @@ Tier-aware: short-circuits to no-op at T0/T1.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -37,7 +53,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.0"
+ROUTINE_VERSION = "1.1.1"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -46,6 +62,8 @@ CADENCE_SEC = 15 * 60
 OVERDUE_2X_SEC = 30 * 60
 PTU_RATE_LIMIT_SEC = 60
 TIER_ACTIVE = {"T2", "T3", "T4"}
+
+SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m\]")
 
 
 def append_log(entry: dict[str, Any]) -> None:
@@ -96,6 +114,123 @@ def emit(additional_context: str) -> None:
         pass
 
 
+def extract_assistant_text(turn: Any) -> str:
+    """Best-effort extract of assistant-message text across transcript shapes.
+
+    Mirrors stop.py at v1.1.1 so the two hooks share grep behaviour."""
+    if not isinstance(turn, dict):
+        return ""
+    role = turn.get("role") or turn.get("type")
+    if role != "assistant":
+        msg = turn.get("message")
+        if isinstance(msg, dict):
+            return extract_assistant_text(msg)
+        return ""
+    content = turn.get("content")
+    if content is None:
+        msg = turn.get("message")
+        if isinstance(msg, dict):
+            content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                parts.append(c.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
+def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
+    """Collect assistant text from the current agent loop.
+
+    Walks the transcript backwards from the end, gathering all assistant-
+    role lines and skipping role="user" lines that carry only tool_result
+    blocks (those are tool returns within the same agent loop, not turn
+    boundaries). Stops at the first user prompt boundary.
+
+    The walk shape matches stop.py's last_assistant_text. The naming
+    "agent_loop_assistant_text" emphasises the v1.1.1 insight that this
+    text spans the entire current agent loop (multi-turn / multi-tool),
+    not just the most recent assistant turn — Stop only sees this scope
+    once per loop, but PostToolUse can sample it after every tool call.
+    """
+    p = Path(transcript_path)
+    if not p.is_file():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+
+    parts: list[str] = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            turn = json.loads(line)
+        except Exception:
+            continue
+
+        role = turn.get("role") or turn.get("type") or ""
+        if not role:
+            inner = turn.get("message")
+            if isinstance(inner, dict):
+                role = inner.get("role") or inner.get("type") or ""
+
+        if role == "assistant":
+            t = extract_assistant_text(turn)
+            if t:
+                parts.append(t)
+            continue
+
+        # tool_result lines have role="user" but carry no prompt-boundary
+        # semantics; skip them so the backwards walk reaches pre-tool
+        # sentinel emissions in the same agent loop.
+        if role == "user":
+            content = turn.get("content")
+            if content is None:
+                msg = turn.get("message")
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(c, dict) and c.get("type") == "tool_result"
+                for c in content
+            ):
+                continue
+
+        if role:
+            break
+
+    if not parts:
+        return None
+
+    parts.reverse()
+    return "\n".join(parts)
+
+
+def max_sentinel_minute(text: str) -> int:
+    """Return the highest T+N minute from any heartbeat sentinel in text.
+
+    Returns -1 if no sentinel is present. Used to gate LAST_HEARTBEAT
+    advance on freshness: a sentinel whose declared minute is no greater
+    than current LAST_HEARTBEAT_MIN is stale loop-history and must not
+    suppress a legitimate OVERDUE alarm.
+    """
+    best = -1
+    for m in SENTINEL_RE.finditer(text):
+        try:
+            n = int(m.group(1))
+        except (ValueError, IndexError):
+            continue
+        if n > best:
+            best = n
+    return best
+
+
 def main() -> int:
     started = time.time()
     try:
@@ -127,6 +262,41 @@ def main() -> int:
         return 0
 
     now = int(started)
+
+    # v1.1.1 F-8 closure: grep the agent-loop's assistant text for any
+    # heartbeat sentinel emitted in an intermediate turn and advance
+    # LAST_HEARTBEAT before the cadence check. Stop fires only at loop-end,
+    # so intermediate-turn sentinels otherwise stay invisible until then,
+    # producing repeated false OVERDUE alarms.
+    transcript_path = event.get("transcript_path") or ""
+    if transcript_path:
+        text = agent_loop_assistant_text(transcript_path)
+        if text:
+            max_min = max_sentinel_minute(text)
+            last_hb_min = (last_hb - t0) // 60 if last_hb > 0 else 0
+            if max_min > last_hb_min:
+                # Fresh sentinel — advance LAST_HEARTBEAT to NOW for
+                # consistency with stop.py advance semantics. Preserve
+                # LAST_PTU_TAG_SEC; the rate-limit window stays in force.
+                last_hb = now
+                write_anchor(session_id, {
+                    "T0": str(t0),
+                    "LAST_HEARTBEAT": str(now),
+                    "TIER": tier,
+                    "LAST_PTU_TAG_SEC": str(last_ptu_tag),
+                })
+                append_log({
+                    "ts": time.time(),
+                    "hook": "post-tool-use",
+                    "session_id": session_id,
+                    "tier": tier,
+                    "tool_name": event.get("tool_name", ""),
+                    "diagnostic": "sentinel-grep-advanced",
+                    "max_sentinel_min": max_min,
+                    "advanced_to_min": (now - t0) // 60,
+                    "routine_version": ROUTINE_VERSION,
+                })
+
     elapsed_t0 = now - t0
     last_hb_effective = last_hb if last_hb > 0 else t0
     elapsed_since_hb = now - last_hb_effective
