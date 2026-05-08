@@ -11,23 +11,40 @@ vc-roe scores every project on two dimensions:
 - **Scope (S0..S3)** — ad-hoc / lightweight task / small project / serious project. From file-presence signals: `decisions.md`, `handovers/`, `BUILD_LOG.md`, `openapi.yaml`, etc.
 - **Criticality (C0..C2)** — personal / professional / regulatory. From regulatory-keyword scan in CLAUDE.md (DORA, MiFID, AIFMD, GDPR, AML, etc.) and path signals (`compliance/`, `regulatory/`, `dpia/`).
 
-The (S, C) → T mapping yields one of five tiers:
+The (S, C) → T mapping yields one of five tiers. The matching slice from `methodology-content/T<N>.md` is injected as `additionalContext`, so Claude knows exactly what discipline level applies before the first user message.
 
-- **T0** ad-hoc — minimal ceremony, fast feedback
-- **T1** lightweight task — plan-first + verify-with-evidence + capture-lessons inline
-- **T2** small project — adds decisions.md, open-issues.md, per-session handovers, heartbeat cadence
-- **T3** serious project — adds audit-pass policy, four-pass closing matrix, anomaly-first reflex, irreversible-action enumeration
-- **T4** mission-critical regulated — eleven-element structural close, mid-flight pause sub-procedure, regression floor verified
-
-Auto-detection caps at T3. T4 is reached only by explicit operator decision (`tier: T4` in CLAUDE.md, or `/vc-roe:tier T4`).
-
-The matching slice from `methodology-content/T<N>.md` is injected as `additionalContext`, so Claude knows exactly what discipline level applies before the first user message.
+Auto-detection caps at T3. T4 is reached only by explicit operator decision (`tier: T4` in CLAUDE.md, or `/vc-roe:tier T4`). Tier inflation alienates operators more than tier deflation misses regulatory evidence; the cap is deliberate.
 
 Display line printed by Claude on its first reply each session:
 
 ```
 Detected tier: T2 (S2/C1), small project, professional. Override with /vc-roe:tier <T0..T4> if wrong.
 ```
+
+## Per-tier controls
+
+Each tier is **cumulative**: T1 inherits T0, T2 inherits T0+T1, etc. The table below lists what each tier ADDS on top of the previous one. The whole point of the plugin is making this explicit at session start so Claude doesn't drift between disciplines.
+
+| Tier | Auto-detected when | Adds (cumulative) |
+|---|---|---|
+| **T0** ad-hoc | empty dir, no signals | humanized-text always-on |
+| **T1** lightweight task | one or more git-tracked files; no `docs/` structure | plan-first; verify-with-evidence (every "shipped" / "works" claim has accompanying evidence); confirmation-gate for irreversible actions; capture-lessons inline; negative-scope at end |
+| **T2** small project | `docs/decisions.md` or `docs/handovers/` present (persistent state) | `decisions.md` (`D-N` IDs, never renumbered, SUPERSEDED rows preserve history); `open-issues.md` (`I-N` IDs); per-session handover + opening-prompt pair; pre-next-chat verification block; five-step session close (handover → opening prompt → decisions update → open-issues update → lessons capture); session-health heartbeat every 15 min wall-clock (hook-enforced via SessionStart anchor + UserPromptSubmit clock-tag + Stop sentinel-grep + PostToolUse fallback); anomaly-callout inline at turn level; TaskCreate for plans ≥3 steps; subagent strategy for parallelism + context hygiene; tier-persistence in handover + opening prompt + project CLAUDE.md |
+| **T3** serious project | `BUILD_LOG.md` or `openapi.yaml` at root; OR ≥1 regulatory keyword in CLAUDE.md (DORA, MiFID, GDPR, AIFMD, AML, etc.); OR multi-machine / multi-month scope; OR irreversible production actions in scope | audit-pass policy (`Audit-pass owed for THIS session: Yes / No` footer on every handover); lessons-promotion path (3+ recurrences of a pattern → standing rule); explicit irreversible-action enumeration in CLAUDE.md (the list the confirmation-gate matches against); four-pass closing matrix (positive-scope edits + forward obligations + scope discipline + end-of-session sweep); CA3 hybrid handover split (summary 1-3 KB + audit-trail 5-15 KB); anomaly-first reflex with formal `OBS-N-NN` row capture (pause + root-cause + capture before continuing; never paper over to ship); regulator-presentable exactness (canonicalise compliance counts on enumeration; propagate to all dependent artefacts); best-practices-first across four axes (performance, project management, security, scheduling); long-process status checks every 10 min; capture-every-idea inline (not at session end); three-same-day-override pattern (4th touch on a coupled architectural surface MUST be a comprehensive batch closing all known follow-on issues, not another isolated patch) |
+| **T4** mission-critical regulated | operator-set only (`tier: T4` in CLAUDE.md or `/vc-roe:tier T4`); auto-detection caps at T3 | **eleven-element structural close**: (1) regression floor verified + (2) change log entry + (3) runbook update + (4) compliance trace + (5) public-contract verification (lint clean) + (6) architecture decisions captured + (7) architecture-section row updated + (8) next-handover skeleton + (9) user-facing docs reviewed + (10) final smoke check + (11) change log written last; mid-flight pause sub-procedure (significant scope shift = stop + document + re-confirm with operator); multi-module review cadence for the project's own methodology document; pre-drafted handover skeletons for next N sessions if on a known phase trajectory; audit-trail target widens to 10-30 KB with mandatory one-paragraph TL;DR at top |
+
+The cumulative property means a T3 project always inherits T2's heartbeat cadence + decisions ledger; a T4 project always inherits T3's anomaly-first reflex + four-pass closing matrix. Lower-tier rules don't get dropped at higher tiers; they stack.
+
+## Why each tier needs what it adds
+
+Quick justification for the additions, in case you're choosing whether to commit to a tier escalation:
+
+- **T1** adds *plan-first* and *confirmation-gate* because once a project is tracked in git, the cost of a wrong destructive action (force-push, schema migration, deploy) is no longer trivial.
+- **T2** adds the *decisions ledger* and *heartbeat cadence* because multi-session work needs a record of choices that survives chat-context resets, and long sessions drift without an external clock.
+- **T3** adds the *audit-pass policy* and *four-pass closing matrix* because a project at this size has visible-to-stakeholders surfaces — public deploys, regulator-adjacent compliance traces, multi-author coordination — and silent regressions are no longer recoverable next session. The *three-same-day-override pattern* specifically catches the "we'll just hot-fix once more" trap that produces death-by-a-thousand-patches when an under-batched ship needed comprehensive bundling instead.
+- **T4** adds the *eleven-element structural close* because regulator-compellable artefacts demand provability after the fact: every claim made at close needs evidence on disk, not just chat history. *Mid-flight pause* exists because at T4, an unannounced scope shift mid-session can leave a partial regulator-reportable state that's worse than no work at all.
+
+A higher-tier project running with lower-tier ceremonies is a leak: the controls that would have caught a problem aren't running. A lower-tier project running with higher-tier ceremonies is friction: ceremony cost without proportional risk.
 
 ## Install
 
