@@ -53,10 +53,11 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.1"
+ROUTINE_VERSION = "1.1.2"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
+UPS_MARKER_PREFIX = "claude-methodology-current-session-"
 
 CADENCE_SEC = 15 * 60
 OVERDUE_2X_SEC = 30 * 60
@@ -71,6 +72,49 @@ def append_log(entry: dict[str, Any]) -> None:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def check_marker_mismatch(session_id: str, cwd_raw: Optional[str]) -> None:
+    """v1.1.2 PTU forensic parity: marker-mismatch diagnostic.
+
+    Mirrors stop.py's check_marker_mismatch so PostToolUse also surfaces
+    cross-process anchor-rewrite races and other cwd-related drift in
+    soak data. Reads /tmp/claude-methodology-current-session-<cwd-hash>
+    and compares its writer's session_id against the calling
+    session_id; if they differ, logs a marker-mismatch diagnostic.
+    Recording-only; no behaviour change.
+
+    Note re OBS-48-01 ([EXAMPLE-PROJ] sessions 47 + 48 dual-startup pattern): this
+    helper catches concurrent same-cwd cross-session races but does NOT
+    by itself detect the OBS-48-01 case (sequential SessionStart events
+    in different cwds within the same chat after /clear), since each
+    session's marker is keyed by its own cwd. The OBS-48-01 root issue
+    is owned by Claude Code's cwd-at-launch + post-/clear session_id
+    binding; the operator-side workaround is to launch claude from
+    inside the project directory the chat is for. The diagnostic here
+    is structural addition for general forensic surface, not a
+    complete OBS-48-01 detector.
+    """
+    if not session_id or not cwd_raw:
+        return
+    try:
+        cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(Path(cwd_raw).resolve()))
+        marker = Path("/tmp") / f"{UPS_MARKER_PREFIX}{cwd_dashed}"
+        if not marker.is_file():
+            return
+        marker_session = marker.read_text(encoding="utf-8").strip()
+        if marker_session and marker_session != session_id:
+            append_log({
+                "ts": time.time(),
+                "hook": "post-tool-use",
+                "diagnostic": "marker-mismatch",
+                "session_id": session_id,
+                "marker_session_id": marker_session,
+                "cwd": cwd_raw,
+                "routine_version": ROUTINE_VERSION,
+            })
     except Exception:
         pass
 
@@ -146,15 +190,31 @@ def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
     """Collect assistant text from the current agent loop.
 
     Walks the transcript backwards from the end, gathering all assistant-
-    role lines and skipping role="user" lines that carry only tool_result
+    role lines, skipping role="user" lines that carry only tool_result
     blocks (those are tool returns within the same agent loop, not turn
-    boundaries). Stops at the first user prompt boundary.
+    boundaries), and skipping synthetic Claude Code transcript metadata
+    lines (attachment, last-prompt, ai-title, permission-mode,
+    file-history-snapshot, plus any future unknown line type). Stops
+    only at a true user-prompt boundary.
 
     The walk shape matches stop.py's last_assistant_text. The naming
     "agent_loop_assistant_text" emphasises the v1.1.1 insight that this
-    text spans the entire current agent loop (multi-turn / multi-tool),
-    not just the most recent assistant turn — Stop only sees this scope
-    once per loop, but PostToolUse can sample it after every tool call.
+    text spans the entire current agent loop (multi-turn / multi-tool):
+    Stop only sees this scope once per loop, but PostToolUse can sample
+    it after every tool call.
+
+    v1.1.2 fix for OBS-46-02 ([EXAMPLE-PROJ] sessions 46 + 48 + 49 forensics):
+    earlier versions halted the walk at any non-assistant /
+    non-user-with-tool_result role, including synthetic Claude Code
+    metadata lines that interleave between assistant text and the most-
+    recent tool_result in real chats. The bug missed pre-tool sentinel
+    emissions and produced repeated false OVERDUE alarms. New rule: HALT
+    only on a true user-prompt boundary (role="user" whose content is
+    NOT a tool_result-bearing block list). Any other role/type is
+    transparent and skipped past. Confirmed via live reproduction at
+    [EXAMPLE-PROJ] s48 + s49 where the assistant's own heartbeat sentinel was
+    missed by the immediately-following PostToolUse despite being on
+    disk.
     """
     p = Path(transcript_path)
     if not p.is_file():
@@ -187,10 +247,11 @@ def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
                 parts.append(t)
             continue
 
-        # tool_result lines have role="user" but carry no prompt-boundary
-        # semantics; skip them so the backwards walk reaches pre-tool
-        # sentinel emissions in the same agent loop.
         if role == "user":
+            # Distinguish tool_result-bearing user lines (internal to the
+            # agent loop, skip) from real user-prompt lines (boundary,
+            # halt). A user line whose content list contains any
+            # tool_result block is treated as internal.
             content = turn.get("content")
             if content is None:
                 msg = turn.get("message")
@@ -201,9 +262,16 @@ def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
                 for c in content
             ):
                 continue
-
-        if role:
+            # Real user-prompt boundary: halt the walk.
             break
+
+        # v1.1.2 fix for OBS-46-02: any other role/type (synthetic Claude
+        # Code metadata like attachment / last-prompt / ai-title /
+        # permission-mode / file-history-snapshot, or any future unknown
+        # synthetic line type) is transparent and skipped past. Do NOT
+        # halt the walk on these. The previous "if role: break" rule
+        # halted on synthetic metadata, missing pre-tool sentinels.
+        continue
 
     if not parts:
         return None
@@ -243,6 +311,8 @@ def main() -> int:
     session_id = event.get("session_id") or ""
     if not session_id:
         return 0
+
+    check_marker_mismatch(session_id, event.get("cwd"))
 
     anchor = read_anchor(session_id)
     if not anchor:
