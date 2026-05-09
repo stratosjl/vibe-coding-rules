@@ -38,7 +38,7 @@ CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
 info "claude CLI detected: ${CLAUDE_VERSION}"
 
 info "adding marketplace ${MARKETPLACE_NAME} from ${REPO_URL}"
-if ! claude code marketplace add "${REPO_URL}" 2>&1 | tee /tmp/vc-roe-install-marketplace.log; then
+if ! claude plugin marketplace add "${REPO_URL}" 2>&1 | tee /tmp/vc-roe-install-marketplace.log; then
   if grep -qi 'already' /tmp/vc-roe-install-marketplace.log 2>/dev/null; then
     warn "marketplace already present; continuing"
   else
@@ -47,7 +47,7 @@ if ! claude code marketplace add "${REPO_URL}" 2>&1 | tee /tmp/vc-roe-install-ma
 fi
 
 info "installing plugin ${PLUGIN_NAME}@${MARKETPLACE_NAME} at user scope"
-if ! claude code plugin install "${PLUGIN_NAME}@${MARKETPLACE_NAME}" --scope user 2>&1 | tee /tmp/vc-roe-install-plugin.log; then
+if ! claude plugin install "${PLUGIN_NAME}@${MARKETPLACE_NAME}" --scope user 2>&1 | tee /tmp/vc-roe-install-plugin.log; then
   if grep -qi 'already' /tmp/vc-roe-install-plugin.log 2>/dev/null; then
     warn "plugin already installed; continuing"
   else
@@ -56,7 +56,7 @@ if ! claude code plugin install "${PLUGIN_NAME}@${MARKETPLACE_NAME}" --scope use
 fi
 
 info "verifying"
-claude code plugin list | grep -i "${PLUGIN_NAME}" || warn "plugin not visible in 'claude code plugin list' output; check ~/.claude/settings.json"
+claude plugin list | grep -i "${PLUGIN_NAME}" || warn "plugin not visible in 'claude plugin list' output; check ~/.claude/settings.json"
 
 cat <<EOF
 
