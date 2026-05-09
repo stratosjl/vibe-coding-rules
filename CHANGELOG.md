@@ -4,6 +4,20 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.1.3 - 2026-05-09
+
+Closes OBS-50-01 (silent-stop blocker missing in v1.1.2 Stop hook). Surfaced during the [INT-A] M0 build at session 75286faf-5ab6-429a-b797-fe6e7cf4900e on 2026-05-09: the assistant called `pnpm add -D vitest` via Bash, the tool result returned, and the next assistant turn produced zero content blocks. Claude Code ended the turn silently and no hook intercepted; the methodology log shows fifty minutes of zero hook activity for that session until the operator typed "where are we" and the next UserPromptSubmit re-engaged the cadence machinery. Semver patch (no API change, no behaviour change for healthy paths; new behaviour is strictly defensive).
+
+What changed:
+
+- **`hooks/stop.py` gained a silent-stop blocker.** A new `last_assistant_blocks()` helper mirrors the v1.1.2 walk-rule (HALT only on a true user-prompt boundary; tool_result lines and synthetic Claude Code metadata are transparent) but returns the raw content-block list rather than concatenated text. The new guard runs in `main()` after the anchor read and before the existing sentinel-grep path: if the most-recent agent loop's gathered blocks contain at least one `tool_use` block and zero non-empty text blocks, Stop emits `{"decision":"block","reason":"..."}` so Claude Code re-prompts the assistant for follow-up text rather than ending the chat silently. The `reason` string instructs the assistant to either continue toward the active milestone OR emit an explicit `[awaiting-user]` / `[turn-complete]` sentinel if it intends to stop. `last_assistant_text()` is refactored to derive its result from `last_assistant_blocks()` for code reuse; behaviour is preserved for all v1.1.2 inputs (text-block joins with `\n` produce the same string under either gathering order).
+- **`ROUTINE_VERSION` bumped to `1.1.3`** across all four hooks; `.claude-plugin/plugin.json` `version` field bumped to match.
+- **`test-heartbeat.py` extended** with three new regression cases: `case_silent_stop_after_tool_blocks_returns_block` (the [INT-A] M0 fixture shape; asserts `decision == "block"` is emitted), `case_silent_stop_with_text_does_not_block` (negative control: text in the same loop suppresses the block), and `case_silent_stop_no_tool_use_does_not_block` (edge case: an empty-content assistant turn must not trigger a false positive). The `write_transcript` helper gained a `blocks` override so a test can compose any content-block layout. Test suite is now 10 cases; all pass at v1.1.3.
+
+What this does NOT change: the v1.1.2 limitation around long pure-text agent loops (zero tool calls for over 14 min wall-clock) remains. Neither PostToolUse nor Stop fire in that window; the OVERDUE-2X auto-advance fail-safe at the next UserPromptSubmit or PostToolUse continues to handle it cleanly. The new silent-stop guard is precisely scoped to the post-tool-result silent-end shape and does not regress any healthy sentinel-grep path.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.1.2 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.1.3 cleanly.
+
 ## 1.1.2 - 2026-05-09
 
 Two fixes shipped together. Both close bugs or forensic gaps in the existing heartbeat fail-safe; semver patch (no API change, no behaviour change for healthy paths).
