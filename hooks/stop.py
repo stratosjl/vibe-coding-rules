@@ -29,6 +29,14 @@ as role="user" inside a tool-bearing assistant turn, so the walk halted
 at the tool boundary BEFORE reaching the pre-tool sentinel. Now skip
 role="user" lines that carry tool_result content blocks; treat them as
 internal-to-turn rather than turn-boundary.
+
+v1.1.3 silent-stop blocker (closes OBS-50-01, [INT-A] M0 build
+2026-05-09): when the most-recent agent-loop's assistant content
+contains tool_use blocks but zero non-empty text blocks, Stop emits
+{"decision":"block", ...} so Claude Code re-prompts rather than ending
+the chat silently. Adds last_assistant_blocks() as the underlying
+walker; last_assistant_text() now derives its result from it for code
+reuse. Walk-rule and skip-rules are unchanged from v1.1.2.
 """
 
 from __future__ import annotations
@@ -48,7 +56,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.2"
+ROUTINE_VERSION = "1.1.3"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -123,61 +131,55 @@ def write_anchor(session_id: str, fields: dict[str, str]) -> None:
         pass
 
 
-def extract_assistant_text(turn: Any) -> str:
-    """Best-effort extract of assistant-message text across transcript shapes."""
+def extract_assistant_blocks(turn: Any) -> list[dict[str, Any]]:
+    """Best-effort extract of assistant content-block list across transcript shapes.
+
+    Returns the raw list of content blocks (each a dict with at least a
+    "type" key) for an assistant-role turn. Returns [] for non-assistant
+    turns or unrecognised shapes. A bare-string content is normalised to
+    a single text block so downstream callers can treat all return
+    values uniformly.
+    """
     if not isinstance(turn, dict):
-        return ""
+        return []
     role = turn.get("role") or turn.get("type")
     if role != "assistant":
         msg = turn.get("message")
         if isinstance(msg, dict):
-            return extract_assistant_text(msg)
-        return ""
+            return extract_assistant_blocks(msg)
+        return []
     content = turn.get("content")
     if content is None:
         msg = turn.get("message")
         if isinstance(msg, dict):
             content = msg.get("content")
     if isinstance(content, str):
-        return content
+        return [{"type": "text", "text": content}]
     if isinstance(content, list):
-        parts = []
-        for c in content:
-            if isinstance(c, dict) and c.get("type") == "text":
-                parts.append(c.get("text", ""))
-        return "\n".join(parts)
-    return ""
+        return [c for c in content if isinstance(c, dict)]
+    return []
 
 
-def last_assistant_text(transcript_path: str) -> Optional[str]:
-    """Collect ALL assistant text from the most-recent assistant turn.
+def last_assistant_blocks(transcript_path: str) -> Optional[list[dict[str, Any]]]:
+    """Collect ALL content blocks from the most-recent agent-loop assistant range.
 
-    The transcript is JSONL with one event per line. An assistant turn may
-    span multiple lines (one per text block, one per tool_use, etc.). Walk
-    backwards from the end of the transcript, accumulating assistant-role
-    text. Skip role="user" lines that carry only tool_result blocks
-    (internal to the agent loop), and skip synthetic Claude Code
-    transcript metadata lines (attachment, last-prompt, ai-title,
-    permission-mode, file-history-snapshot, plus any future unknown line
-    type). Stop only at a true user-prompt boundary. Return the
-    concatenated text or None.
+    The transcript is JSONL with one event per line. An assistant turn
+    may span multiple lines (one per text block, one per tool_use, etc.)
+    and an agent loop may chain multiple assistant turns through one or
+    more tool_result lines. Walk backwards from the end of the
+    transcript, accumulating assistant content blocks. Skip role="user"
+    lines that carry only tool_result blocks (internal to the agent
+    loop), and skip synthetic Claude Code metadata line types
+    (attachment, last-prompt, ai-title, permission-mode,
+    file-history-snapshot, plus any future unknown synthetic type).
+    Halt only on a true user-prompt boundary. Return the flat block list
+    in original (forward) order, or None.
 
-    v0.2.0 fix for OBS-MET-V: previous implementation returned only the
-    first non-empty assistant line walking backwards, missing sentinels
-    emitted in earlier text blocks within the same multi-line turn.
-
-    v0.3.0 fix for OBS-MET-AA: skip role="user" tool_result lines so the
-    walk reaches pre-tool sentinel emissions in the same multi-line turn.
-
-    v1.1.2 fix for OBS-46-02 ([EXAMPLE-PROJ] sessions 46 + 48 + 49 forensics):
-    earlier versions halted the walk at any non-assistant /
-    non-user-with-tool_result role, including synthetic Claude Code
-    metadata lines that interleave between assistant text and the most-
-    recent tool_result in real chats. The bug missed pre-tool sentinel
-    emissions and produced repeated false OVERDUE alarms. New rule: HALT
-    only on a true user-prompt boundary (role="user" whose content is
-    NOT a tool_result-bearing block list). Any other role/type is
-    transparent and skipped past.
+    v1.1.3 introduction: this is the new underlying walker. It mirrors
+    the v1.1.2 last_assistant_text() walk-rule and skip-rules but
+    returns the raw block list rather than concatenated text, so that
+    main() can ask "are there tool_use blocks but no text blocks" for
+    the silent-stop blocker (OBS-50-01).
     """
     p = Path(transcript_path)
     if not p.is_file():
@@ -188,7 +190,7 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
     except Exception:
         return None
 
-    parts: list[str] = []
+    collected: list[list[dict[str, Any]]] = []
     for line in reversed(lines):
         line = line.strip()
         if not line:
@@ -205,9 +207,9 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
                 role = inner.get("role") or inner.get("type") or ""
 
         if role == "assistant":
-            t = extract_assistant_text(turn)
-            if t:
-                parts.append(t)
+            blocks = extract_assistant_blocks(turn)
+            if blocks:
+                collected.append(blocks)
             continue
 
         if role == "user":
@@ -225,21 +227,47 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
                 for c in content
             ):
                 continue
-            # Real user-prompt boundary: halt the walk.
             break
 
         # v1.1.2 fix for OBS-46-02: any other role/type (synthetic Claude
         # Code metadata like attachment / last-prompt / ai-title /
         # permission-mode / file-history-snapshot, or any future unknown
-        # synthetic line type) is transparent and skipped past. Do NOT
-        # halt the walk on these. The previous "if role: break" rule
-        # halted on synthetic metadata, missing pre-tool sentinels.
+        # synthetic line type) is transparent and skipped past.
         continue
 
-    if not parts:
+    if not collected:
         return None
 
-    parts.reverse()
+    flat: list[dict[str, Any]] = []
+    for blocks in reversed(collected):
+        flat.extend(blocks)
+    return flat
+
+
+def last_assistant_text(transcript_path: str) -> Optional[str]:
+    """Concatenated text of all text-type blocks from the most-recent agent loop.
+
+    Walk-rule and skip-rules are identical to v1.1.2: HALT only on a
+    true user-prompt boundary (role="user" whose content is NOT a
+    tool_result-bearing block list); any other role/type, including
+    synthetic Claude Code metadata, is transparent and skipped past.
+
+    v1.1.3 refactor: this function now derives its result from
+    last_assistant_blocks() rather than walking the transcript itself.
+    The behaviour is unchanged for all v1.1.2 inputs (text-block joins
+    with "\n" produce the same string under either gathering order).
+    """
+    blocks = last_assistant_blocks(transcript_path)
+    if not blocks:
+        return None
+    parts = [
+        b.get("text", "")
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
     return "\n".join(parts)
 
 
@@ -261,6 +289,50 @@ def main() -> int:
 
     anchor = read_anchor(session_id)
     if not anchor:
+        return 0
+
+    # v1.1.3 silent-stop blocker (OBS-50-01). When the most-recent agent
+    # loop's assistant content is one-or-more tool_use blocks with zero
+    # non-empty text blocks, the assistant ended its turn after the
+    # tool_result without ever explaining its next step. Claude Code
+    # ends the chat silently in that state and no subsequent hook fires
+    # to bridge the gap ([INT-A] M0 build 2026-05-09 stalled 50 min
+    # before operator typed "where are we"). Emit decision="block" so
+    # Claude Code re-prompts the assistant for follow-up text.
+    blocks = last_assistant_blocks(transcript_path)
+    has_text = any(
+        isinstance(b, dict)
+        and b.get("type") == "text"
+        and (b.get("text") or "").strip()
+        for b in (blocks or [])
+    )
+    has_tool_use = any(
+        isinstance(b, dict) and b.get("type") == "tool_use"
+        for b in (blocks or [])
+    )
+    if has_tool_use and not has_text:
+        output = {
+            "decision": "block",
+            "reason": (
+                "STOP BLOCKED by vc-roe silent-stop blocker (v1.1.3, "
+                "OBS-50-01). Your previous turn ended after tool calls "
+                "with zero text blocks. Either continue execution toward "
+                "the active milestone, OR emit an explicit "
+                "'[awaiting-user]' or '[turn-complete]' sentinel as your "
+                "text response if you intend to stop. Silent end after a "
+                "tool_result is the documented failure mode from the "
+                "[INT-A] M0 build (2026-05-09)."
+            ),
+        }
+        print(json.dumps(output))
+        append_log({
+            "ts": time.time(),
+            "hook": "stop",
+            "session_id": session_id,
+            "blocked": True,
+            "reason": "silent-stop",
+            "routine_version": ROUTINE_VERSION,
+        })
         return 0
 
     text = last_assistant_text(transcript_path)

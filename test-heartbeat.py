@@ -25,6 +25,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 HOOK = PLUGIN_ROOT / "hooks" / "post-tool-use.py"
+STOP_HOOK = PLUGIN_ROOT / "hooks" / "stop.py"
 ANCHOR_DIR = Path("/tmp")
 
 
@@ -55,6 +56,10 @@ def write_transcript(path: Path, turns: list[dict]) -> None:
 
     Each turn dict supports several shapes:
     - {role: "assistant", text: "..."}
+    - {role: "assistant", blocks: [...]}  (v1.1.3 OBS-50-01 fixture: lets
+        a test write a tool_use-only assistant turn, an empty assistant
+        turn, or any other content-block layout. When "blocks" is
+        present it overrides the default text-block construction.)
     - {role: "user-prompt", text: "..."}
     - {role: "tool-result", text: "..."}
     - {role: "metadata", type: "attachment"|"last-prompt"|"ai-title"|
@@ -67,7 +72,10 @@ def write_transcript(path: Path, turns: list[dict]) -> None:
     for turn in turns:
         role = turn["role"]
         if role == "assistant":
-            content = [{"type": "text", "text": turn["text"]}]
+            if "blocks" in turn:
+                content = turn["blocks"]
+            else:
+                content = [{"type": "text", "text": turn["text"]}]
             lines.append(json.dumps({"role": role, "content": content}))
         elif role == "user-prompt":
             content = turn["text"]
@@ -102,6 +110,25 @@ def run_post_tool_use(session_id: str, transcript_path: Path,
         timeout=10,
     )
     return proc.returncode
+
+
+def run_stop(session_id: str, transcript_path: Path) -> tuple[int, str]:
+    """Run hooks/stop.py end-to-end; return (returncode, stdout-decoded)."""
+    event = {
+        "session_id": session_id,
+        "transcript_path": str(transcript_path),
+        "cwd": str(PLUGIN_ROOT),
+    }
+    env = os.environ.copy()
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+    proc = subprocess.run(
+        ["python3", str(STOP_HOOK)],
+        input=json.dumps(event).encode("utf-8"),
+        capture_output=True,
+        env=env,
+        timeout=10,
+    )
+    return proc.returncode, proc.stdout.decode("utf-8", errors="replace")
 
 
 def _cleanup(session_id: str) -> None:
@@ -328,6 +355,113 @@ def case_user_prompt_boundary_halts_walk(tmp: Path) -> tuple[bool, str]:
         _cleanup(sid)
 
 
+def case_silent_stop_after_tool_blocks_returns_block(tmp: Path) -> tuple[bool, str]:
+    """v1.1.3 OBS-50-01: tool_use-only most-recent agent loop -> Stop blocks.
+
+    Reproduces the [INT-A] M0 build 2026-05-09 silent-stop signature:
+    the assistant emitted a tool_use block and then ended its turn after
+    the tool_result without producing any text. Walking back from the
+    end of the transcript yields blocks=[tool_use], so the silent-stop
+    guard fires and stop.py prints {"decision":"block", ...}.
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 5 * 60
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "install vitest"},
+            {"role": "assistant",
+             "blocks": [{"type": "tool_use", "id": "toolu_01",
+                         "name": "Bash",
+                         "input": {"command": "pnpm add -D vitest"}}]},
+            {"role": "tool-result", "text": "ok"},
+        ])
+        rc, stdout = run_stop(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: stop.py rc={rc}, stdout={stdout!r}"
+        try:
+            payload = json.loads(stdout)
+        except Exception as exc:
+            return False, f"FAIL: stdout not JSON ({exc}): {stdout!r}"
+        if payload.get("decision") == "block":
+            return True, "OK (silent-stop blocked; decision=block emitted)"
+        return False, f"FAIL: decision={payload.get('decision')!r}, expected 'block'"
+    finally:
+        _cleanup(sid)
+
+
+def case_silent_stop_with_text_does_not_block(tmp: Path) -> tuple[bool, str]:
+    """v1.1.3 OBS-50-01 negative-control: text in same loop suppresses block.
+
+    Same agent-loop shape as the silent-stop case but the assistant turn
+    carries a non-empty text block alongside the tool_use. The walk
+    yields has_text=True and the silent-stop guard does NOT fire. Stop
+    falls through to the existing sentinel-grep path; with no
+    [heartbeat-fired] sentinel it logs sentinel_found:false and returns
+    0 with empty stdout (no decision emitted).
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 5 * 60
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "install vitest"},
+            {"role": "assistant",
+             "blocks": [
+                 {"type": "text", "text": "running pnpm add -D vitest"},
+                 {"type": "tool_use", "id": "toolu_02",
+                  "name": "Bash",
+                  "input": {"command": "pnpm add -D vitest"}},
+             ]},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "assistant", "text": "vitest installed"},
+        ])
+        rc, stdout = run_stop(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: stop.py rc={rc}, stdout={stdout!r}"
+        if stdout.strip():
+            return False, (f"FAIL: stdout non-empty: {stdout!r}; "
+                           f"silent-stop guard should not have fired")
+        return True, "OK (text present; silent-stop guard skipped)"
+    finally:
+        _cleanup(sid)
+
+
+def case_silent_stop_no_tool_use_does_not_block(tmp: Path) -> tuple[bool, str]:
+    """v1.1.3 OBS-50-01 edge case: zero tool_use AND zero text -> no block.
+
+    Pathological assistant turn with an empty content list. The walk
+    yields has_text=False AND has_tool_use=False, so the silent-stop
+    guard's `has_tool_use and not has_text` condition is False. Stop
+    falls through to the sentinel-grep path; last_assistant_text returns
+    None and Stop returns 0 with empty stdout. This guards against a
+    false positive on edge cases that may never occur in practice.
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 5 * 60
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "go"},
+            {"role": "assistant", "blocks": []},
+        ])
+        rc, stdout = run_stop(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: stop.py rc={rc}, stdout={stdout!r}"
+        if stdout.strip():
+            return False, (f"FAIL: stdout non-empty: {stdout!r}; "
+                           f"empty-content turn must not trip silent-stop")
+        return True, "OK (no tool_use AND no text; silent-stop guard skipped)"
+    finally:
+        _cleanup(sid)
+
+
 def main() -> int:
     cases = [
         ("fresh sentinel advances", case_fresh_sentinel_advances),
@@ -339,6 +473,12 @@ def main() -> int:
          case_synthetic_metadata_lines_do_not_halt_walk),
         ("user-prompt halts (v1.1.2 regression guard)",
          case_user_prompt_boundary_halts_walk),
+        ("silent-stop after tool blocks (v1.1.3 OBS-50-01)",
+         case_silent_stop_after_tool_blocks_returns_block),
+        ("silent-stop with text does not block (v1.1.3 OBS-50-01)",
+         case_silent_stop_with_text_does_not_block),
+        ("silent-stop no tool_use does not block (v1.1.3 OBS-50-01)",
+         case_silent_stop_no_tool_use_does_not_block),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     try:
