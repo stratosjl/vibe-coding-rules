@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.1.4 - 2026-05-10
+
+Audit-infrastructure ship. The pre-publish audit gains a sourceable pattern file shared with a new post-publish state audit so the two audits cannot drift apart, plus broader DENY coverage targeting operator-private identifiers found in observed project-dir encodings. Patch-class semver (no plugin runtime change; hook code untouched aside from the lockstep `ROUTINE_VERSION` bump per the project's standing convention).
+
+What changed:
+
+- **`bin/audit-patterns.sh` added.** Single source of truth for `DENY_PATTERNS`, `WARN_PATTERNS`, `PUBLIC_AUTHOR_EMAIL`, and `SCAN_EXCLUDE`. Both `publish-audit.sh` (pre-push) and the new `publish-audit-state.sh` (post-push) `source` this file so the two audits scan against an identical pattern set; no copy-paste drift between the two consumers.
+- **`bin/publish-audit.sh` refactored to source the pattern file** instead of inlining the deny / warn arrays. No behaviour change in the deny-set the script scans for at v1.1.3 baseline; the broader pattern coverage is in `audit-patterns.sh`.
+- **`bin/publish-audit-state.sh` added.** Post-push verification: clones the public repo via HTTPS into an ephemeral tempdir and runs the cloned tree's `bin/publish-audit.sh --strict` against itself. Optional `--history` flag walks every commit on `main` and reports per-commit DENY hits as historical leaks. SSH→HTTPS URL translation is built in so the audit clone needs no SSH key in the agent (read-only public-repo access).
+- **DENY pattern set extended** in `bin/audit-patterns.sh` to cover operator-private identifiers observed in real Claude Code project-directory encodings on the maintainer's machines: alternate-charset firm-name forms, native path fragments (Windows + Linux), additional path-prefix anchors, client-identifier strings sourced from observed project-dir names, and personal-side path roots. The pattern list itself is operator-private (its presence in DENY is what protects it); the file is excluded from the scan via `SCAN_EXCLUDE`.
+- **WARN set extended** with two additional decision-ID prefix families and a regulator-name eyeball flag for soft review.
+- **`ROUTINE_VERSION` bumped to `1.1.4`** across all four hooks; `.claude-plugin/plugin.json` `version` field bumped to match. Hook code itself is byte-identical to v1.1.3 aside from the constant.
+
+What this does NOT do: scrub historical operator-private references already baked into the public repo at v1.1.3 baseline. Two project-name forensic tags (`[INT-A]`, `[INT-H]`) appear in `hooks/`, `methodology-content/T*.md`, `test-heartbeat.py`, and `CHANGELOG.md` historically; they are surfaced as WARN hits at v1.1.4 (not DENY) so the new audit infrastructure can ship without self-blocking. A dedicated remediation session (logged as OBS-vcroe-historical-leak-01) decides between (a) scrub-and-force-push history rewrite, (b) new-repo-with-clean-history, or (c) accept-and-document. Promotion of those two patterns from WARN to DENY follows whichever path is chosen.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.1.3 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.1.4 cleanly. (Hook code is byte-identical aside from the `ROUTINE_VERSION` constant; the practical effect of staying on v1.1.3 hooks is only the version field reported in log entries.)
+
 ## 1.1.3 - 2026-05-09
 
 Closes OBS-50-01 (silent-stop blocker missing in v1.1.2 Stop hook). Surfaced during the [INT-A] M0 build at session 75286faf-5ab6-429a-b797-fe6e7cf4900e on 2026-05-09: the assistant called `pnpm add -D vitest` via Bash, the tool result returned, and the next assistant turn produced zero content blocks. Claude Code ended the turn silently and no hook intercepted; the methodology log shows fifty minutes of zero hook activity for that session until the operator typed "where are we" and the next UserPromptSubmit re-engaged the cadence machinery. Semver patch (no API change, no behaviour change for healthy paths; new behaviour is strictly defensive).

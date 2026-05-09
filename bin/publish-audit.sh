@@ -36,50 +36,16 @@ hdr()  { color '36' "[publish-audit] "; printf '%s\n' "$*"; }
 hit()  { color '33' "[publish-audit hit] "; printf '%s\n' "$*"; }
 fail() { color '31' "[publish-audit] "; printf '%s\n' "$*"; exit 1; }
 
-PUBLIC_AUTHOR_EMAIL='stratosjl@gmail.com'
-
-# Patterns that are NEVER allowed in a public commit. Add operator-specific
-# strings to this list as new private projects spin up.
-DENY_PATTERNS=(
-  # Employer + work email
-  '[OPERATOR-DOMAIN]'
-  's\.laspas@[OPERATOR-DOMAIN]'
-  '[OPERATOR-FIRM]'
-  '[OPERATOR-FIRM-ABBR]'
-
-  # Internal R&D project names that are operator-private
-  '[INT-D]'
-  '[INT-E]'
-  '[INT-F]'
-
-  # Operator-private filesystem paths
-  '/home/[OPERATOR-USER]/Cloud'
-  '***REMOVED***/[OPERATOR-DOCS]'
-
-  # Private-network hostnames (add as discovered)
-  '\.internal\b'
-  '\.lan\b'
-)
-
-# Patterns that PROBABLY indicate a leak but may be legitimate. Reviewer
-# decides per-hit.
-WARN_PATTERNS=(
-  # Internal decision-ID prefixes (legitimate as documentation, but reveal
-  # private-project-tracking provenance)
-  'D-MET-[0-9]+'
-  'OBS-MET-[A-Z]+'
-  'F-MET-[A-Z0-9-]+'
-  'I-MET-[0-9]+'
-
-  # Specific compliance frameworks named in operator's day-job context
-  # (regulator NAMES are public; specific firm-implementation paths might
-  # not be — review case-by-case)
-  'Tiered Methodology Consolidation'
-)
-
-# Files we never scan (binary / generated / license texts / this script
-# itself, which contains the deny-patterns and would self-match).
-SCAN_EXCLUDE='(__pycache__|\.git|\.gitignore|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh)'
+# Source the canonical pattern list so this script and bin/publish-audit-state.sh
+# stay in lockstep on what counts as a leak. Defines: DENY_PATTERNS,
+# WARN_PATTERNS, PUBLIC_AUTHOR_EMAIL, SCAN_EXCLUDE.
+PATTERNS_FILE="$REPO_ROOT/bin/audit-patterns.sh"
+if [ ! -r "$PATTERNS_FILE" ]; then
+  printf '[publish-audit] FATAL: cannot source %s\n' "$PATTERNS_FILE" >&2
+  exit 2
+fi
+# shellcheck disable=SC1090
+. "$PATTERNS_FILE"
 
 deny_hits=0
 warn_hits=0
