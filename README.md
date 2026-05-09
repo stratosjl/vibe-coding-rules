@@ -63,8 +63,8 @@ iwr -useb https://raw.githubusercontent.com/stratosjl/vibe-coding-rules/main/ins
 ### Manual install via Claude Code marketplace
 
 ```bash
-claude code marketplace add https://github.com/stratosjl/vibe-coding-rules.git
-claude code plugin install vc-roe@vibe-coding-rules --scope user
+claude plugin marketplace add https://github.com/stratosjl/vibe-coding-rules.git
+claude plugin install vc-roe@vibe-coding-rules --scope user
 ```
 
 The install scripts are equivalent to the manual marketplace flow; they exist so first-time users have a single command.

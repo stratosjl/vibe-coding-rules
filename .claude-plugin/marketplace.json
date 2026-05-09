@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "vibe-coding-rules",
+  "description": "Marketplace for vc-roe (Vibe Coding · Rules of Engagement). A Claude Code plugin that auto-detects project complexity (Scope x Criticality) and injects the matching methodology slice as additionalContext at SessionStart.",
+  "owner": {
+    "name": "Stratos Laspas",
+    "email": "stratosjl@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "vc-roe",
+      "description": "Auto-detects project complexity (Scope x Criticality) and injects the matching methodology slice as additionalContext at SessionStart. Five tiers: T0 ad-hoc through T4 mission-critical regulated. Hook-driven heartbeat keeps long sessions on cadence.",
+      "source": "./",
+      "category": "productivity",
+      "author": {
+        "name": "Stratos Laspas",
+        "email": "stratosjl@gmail.com"
+      },
+      "homepage": "https://github.com/stratosjl/vibe-coding-rules",
+      "license": "GPL-3.0-or-later"
+    }
+  ]
+}

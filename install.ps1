@@ -38,7 +38,7 @@ $marketplaceLog = Join-Path $env:TEMP 'vc-roe-install-marketplace.log'
 $pluginLog = Join-Path $env:TEMP 'vc-roe-install-plugin.log'
 
 Write-Info "adding marketplace $MarketplaceName from $RepoUrl"
-$marketplaceOutput = & claude code marketplace add $RepoUrl 2>&1
+$marketplaceOutput = & claude plugin marketplace add $RepoUrl 2>&1
 $marketplaceOutput | Out-File -FilePath $marketplaceLog -Encoding utf8
 $marketplaceText = $marketplaceOutput -join "`n"
 if ($LASTEXITCODE -ne 0) {
@@ -50,7 +50,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Info "installing plugin $PluginName@$MarketplaceName at user scope"
-$pluginOutput = & claude code plugin install "$PluginName@$MarketplaceName" --scope user 2>&1
+$pluginOutput = & claude plugin install "$PluginName@$MarketplaceName" --scope user 2>&1
 $pluginOutput | Out-File -FilePath $pluginLog -Encoding utf8
 $pluginText = $pluginOutput -join "`n"
 if ($LASTEXITCODE -ne 0) {
@@ -62,12 +62,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Info "verifying"
-$listOutput = & claude code plugin list 2>&1
+$listOutput = & claude plugin list 2>&1
 if ($listOutput -match $PluginName) {
     # ok
 }
 else {
-    Write-Warn "plugin not visible in 'claude code plugin list' output; check %USERPROFILE%\.claude\settings.json"
+    Write-Warn "plugin not visible in 'claude plugin list' output; check %USERPROFILE%\.claude\settings.json"
 }
 
 Write-Host ""
