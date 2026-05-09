@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.1.2 - 2026-05-09
+
+Two fixes shipped together. Both close bugs or forensic gaps in the existing heartbeat fail-safe; semver patch (no API change, no behaviour change for healthy paths).
+
+What changed:
+
+- **Walk-halt rule fixed in `hooks/post-tool-use.py` and `hooks/stop.py` (closes OBS-46-02).** The backwards-walk in `agent_loop_assistant_text()` (PostToolUse) and `last_assistant_text()` (Stop) previously halted at any non-assistant / non-user-with-tool_result role. Real Claude Code transcripts interleave synthetic metadata line types (`attachment`, `last-prompt`, `ai-title`, `permission-mode`, `file-history-snapshot`) between assistant text and the most-recent tool_result. The old rule halted at the first such metadata line and missed pre-tool sentinel emissions, producing repeated false OVERDUE alarms during long agent loops. New rule: HALT only on a true user-prompt boundary (role="user" whose content is NOT a tool_result-bearing block list). Any other role/type, including future unknown synthetic types Claude Code may add, is treated as transparent and skipped past. Confirmed via live reproduction at [EXAMPLE-PROJ] sessions 48 + 49 where the assistant's own heartbeat sentinel was missed by the immediately-following PostToolUse despite being on disk in the transcript.
+- **`hooks/post-tool-use.py` gained a `check_marker_mismatch` helper.** Mirrors the existing helper in `stop.py` so PostToolUse also surfaces cross-process anchor-rewrite races and other cwd-related drift in soak data. Recording-only; no behaviour change. Calls inserted in `main()` after session_id validation, before anchor read.
+- **`ROUTINE_VERSION` bumped to `1.1.2`** across all four hooks; `.claude-plugin/plugin.json` `version` field bumped to match.
+- **`test-heartbeat.py` extended** with two new regression cases: `case_synthetic_metadata_lines_do_not_halt_walk` (confirms the new walk-rule reaches sentinels past synthetic metadata; the s46 transcript fragment that surfaced the bug is the fixture shape) and `case_user_prompt_boundary_halts_walk` (regression guard against the new permissive walk over-walking past a real user-prompt boundary into an earlier agent loop). Test suite is now 7 cases; all pass at v1.1.2.
+
+Known limitation re OBS-48-01: when Claude Code launches with a `cwd` that does not match the project the chat is for, plus a tier auto-detect mismatch that triggers `/clear`, two SessionStart events fire for the same chat with different session_ids in different cwds. Subsequent PostToolUse and Stop events keep firing against the FIRST session_id (the auto-detected one), reading the wrong transcript_path. The new PTU `check_marker_mismatch` does not catch this case because each session's marker is keyed by its own cwd. The actual fix is operator-side: launch `claude` from inside the project directory the chat is for. Code-side detection of the OBS-48-01 pattern is queued for a future release if the operator-side workaround proves brittle.
+
+What this does NOT change: long conversational segments inside a single agent loop with zero tool calls (the assistant is in pure-text mode for over 14 min wall-clock). Neither PostToolUse nor Stop fire in that window; there is no Claude Code hook event to bridge it. The OVERDUE-2X auto-advance fail-safe at the next UserPromptSubmit or PostToolUse continues to handle it cleanly without operator intervention; the heartbeat block discipline at the start of the recovery reply remains the assistant's responsibility per D-MET-41.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.1.1 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.1.2 cleanly.
+
 ## 1.1.1 — 2026-05-09
 
 Fixes the heartbeat-cadence reliability gap surfaced at [EXAMPLE-PROJ] session 38 (six OVERDUE alarms in one session, four "silent drops" of spec-correct sentinel emissions). Forensics on `~/.claude/methodology-hook.log` for that session showed Stop fired exactly once for a 110-minute agent loop while six PostToolUse fires reported OVERDUE. Root cause: Claude Code fires Stop on agent-loop yield, not after every assistant turn; intermediate-turn heartbeat sentinels were therefore invisible to LAST_HEARTBEAT until loop-end.

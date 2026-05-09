@@ -48,7 +48,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.1.1"
+ROUTINE_VERSION = "1.1.2"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -155,12 +155,29 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
     The transcript is JSONL with one event per line. An assistant turn may
     span multiple lines (one per text block, one per tool_use, etc.). Walk
     backwards from the end of the transcript, accumulating assistant-role
-    text until we hit a non-assistant role or run out of lines. Return the
+    text. Skip role="user" lines that carry only tool_result blocks
+    (internal to the agent loop), and skip synthetic Claude Code
+    transcript metadata lines (attachment, last-prompt, ai-title,
+    permission-mode, file-history-snapshot, plus any future unknown line
+    type). Stop only at a true user-prompt boundary. Return the
     concatenated text or None.
 
     v0.2.0 fix for OBS-MET-V: previous implementation returned only the
     first non-empty assistant line walking backwards, missing sentinels
     emitted in earlier text blocks within the same multi-line turn.
+
+    v0.3.0 fix for OBS-MET-AA: skip role="user" tool_result lines so the
+    walk reaches pre-tool sentinel emissions in the same multi-line turn.
+
+    v1.1.2 fix for OBS-46-02 ([EXAMPLE-PROJ] sessions 46 + 48 + 49 forensics):
+    earlier versions halted the walk at any non-assistant /
+    non-user-with-tool_result role, including synthetic Claude Code
+    metadata lines that interleave between assistant text and the most-
+    recent tool_result in real chats. The bug missed pre-tool sentinel
+    emissions and produced repeated false OVERDUE alarms. New rule: HALT
+    only on a true user-prompt boundary (role="user" whose content is
+    NOT a tool_result-bearing block list). Any other role/type is
+    transparent and skipped past.
     """
     p = Path(transcript_path)
     if not p.is_file():
@@ -193,10 +210,11 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
                 parts.append(t)
             continue
 
-        # v0.3.0 fix for OBS-MET-AA: tool_result lines have role="user" but
-        # carry no prompt-boundary semantics; skip them so the backwards walk
-        # reaches pre-tool sentinel emissions in the same multi-line turn.
         if role == "user":
+            # Distinguish tool_result-bearing user lines (internal to the
+            # agent loop, skip) from real user-prompt lines (boundary,
+            # halt). A user line whose content list contains any
+            # tool_result block is treated as internal per OBS-MET-AA.
             content = turn.get("content")
             if content is None:
                 msg = turn.get("message")
@@ -207,9 +225,16 @@ def last_assistant_text(transcript_path: str) -> Optional[str]:
                 for c in content
             ):
                 continue
-
-        if role:
+            # Real user-prompt boundary: halt the walk.
             break
+
+        # v1.1.2 fix for OBS-46-02: any other role/type (synthetic Claude
+        # Code metadata like attachment / last-prompt / ai-title /
+        # permission-mode / file-history-snapshot, or any future unknown
+        # synthetic line type) is transparent and skipped past. Do NOT
+        # halt the walk on these. The previous "if role: break" rule
+        # halted on synthetic metadata, missing pre-tool sentinels.
+        continue
 
     if not parts:
         return None

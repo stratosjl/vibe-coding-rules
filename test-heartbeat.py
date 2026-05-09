@@ -53,22 +53,34 @@ def read_anchor(session_id: str) -> dict[str, str]:
 def write_transcript(path: Path, turns: list[dict]) -> None:
     """Write a synthetic JSONL transcript.
 
-    Each turn dict supports {role, text, tool_result} shapes; the helper
-    builds a minimally-realistic content block list for each."""
+    Each turn dict supports several shapes:
+    - {role: "assistant", text: "..."}
+    - {role: "user-prompt", text: "..."}
+    - {role: "tool-result", text: "..."}
+    - {role: "metadata", type: "attachment"|"last-prompt"|"ai-title"|
+        "permission-mode"|"file-history-snapshot"|...}
+        (v1.1.2 OBS-46-02 fixture: synthetic Claude Code metadata lines
+        that carry only type=..., no role)
+    The helper builds a minimally-realistic JSONL line for each.
+    """
     lines: list[str] = []
     for turn in turns:
         role = turn["role"]
         if role == "assistant":
             content = [{"type": "text", "text": turn["text"]}]
+            lines.append(json.dumps({"role": role, "content": content}))
         elif role == "user-prompt":
-            role = "user"
             content = turn["text"]
+            lines.append(json.dumps({"role": "user", "content": content}))
         elif role == "tool-result":
-            role = "user"
             content = [{"type": "tool_result", "content": turn.get("text", "ok")}]
+            lines.append(json.dumps({"role": "user", "content": content}))
+        elif role == "metadata":
+            meta_type = turn.get("type", "attachment")
+            lines.append(json.dumps({"type": meta_type, "message": None}))
         else:
             content = turn.get("text", "")
-        lines.append(json.dumps({"role": role, "content": content}))
+            lines.append(json.dumps({"role": role, "content": content}))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -231,6 +243,91 @@ def case_tier_t1_no_op(tmp: Path) -> tuple[bool, str]:
         _cleanup(sid)
 
 
+def case_synthetic_metadata_lines_do_not_halt_walk(tmp: Path) -> tuple[bool, str]:
+    """v1.1.2 OBS-46-02 regression: synthetic metadata must not halt walk.
+
+    In real Claude Code transcripts, synthetic metadata line types
+    (attachment, last-prompt, ai-title, permission-mode,
+    file-history-snapshot) interleave between assistant text and the
+    most-recent tool_result. The pre-v1.1.2 walk halted at any
+    non-assistant / non-user-with-tool_result role, missing pre-tool
+    sentinel emissions and producing repeated false OVERDUE alarms.
+    Layout mirrors the s46 transcript fragment that surfaced the bug.
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 16 * 60
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "open"},
+            {"role": "assistant",
+             "text": "session goal restated\nscope clean\n"
+                     "no anomaly\nno side-questions\nno bg tasks\n"
+                     "[heartbeat-fired:T+15m]"},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "metadata", "type": "attachment"},
+            {"role": "metadata", "type": "last-prompt"},
+            {"role": "metadata", "type": "ai-title"},
+            {"role": "metadata", "type": "permission-mode"},
+            {"role": "metadata", "type": "file-history-snapshot"},
+            {"role": "assistant", "text": "more work, no fresh sentinel"},
+            {"role": "tool-result", "text": "ok"},
+        ])
+        run_post_tool_use(sid, tx)
+        anchor = read_anchor(sid)
+        last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
+        if last_hb >= now - 2:
+            return True, f"OK (walk skipped past metadata; advanced to ~{last_hb})"
+        return False, (f"FAIL: LAST_HEARTBEAT={last_hb}, expected ~{now}; "
+                       f"walk halted at metadata line (regression of OBS-46-02)")
+    finally:
+        _cleanup(sid)
+
+
+def case_user_prompt_boundary_halts_walk(tmp: Path) -> tuple[bool, str]:
+    """v1.1.2 regression guard: real user-prompt boundary still halts walk.
+
+    The new permissive walk-rule must continue to halt at a true user-
+    prompt boundary (role="user" without tool_result content) so
+    sentinels from previous agent loops do not leak into the current-
+    loop scope. Setup: LAST_HEARTBEAT_MIN = 12; a stale T+10m sentinel
+    in the current loop (must not advance via freshness gate); a
+    T+20m sentinel in the PREVIOUS loop (must not be reached at all
+    by the walk). If the walk leaks past the user-prompt boundary it
+    will see T+20m and incorrectly advance.
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 25 * 60
+        last_hb_initial = t0 + 12 * 60
+        write_anchor(sid, t0=t0, last_hb=last_hb_initial, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "earliest prompt"},
+            {"role": "assistant",
+             "text": "old turn, [heartbeat-fired:T+20m]"},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "user-prompt", "text": "current prompt"},
+            {"role": "assistant",
+             "text": "current turn, [heartbeat-fired:T+10m]"},
+            {"role": "tool-result", "text": "ok"},
+        ])
+        run_post_tool_use(sid, tx)
+        anchor = read_anchor(sid)
+        last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
+        if last_hb == last_hb_initial:
+            return True, ("OK (walk halted at user-prompt; T+20m from "
+                          "prior loop unreached; T+10m stale)")
+        return False, (f"FAIL: LAST_HEARTBEAT={last_hb}, expected unchanged "
+                       f"at {last_hb_initial}; walk leaked past user-prompt "
+                       f"boundary or freshness gate failed")
+    finally:
+        _cleanup(sid)
+
+
 def main() -> int:
     cases = [
         ("fresh sentinel advances", case_fresh_sentinel_advances),
@@ -238,6 +335,10 @@ def main() -> int:
         ("no sentinel no-op", case_no_sentinel_no_change),
         ("multi-sentinel picks max", case_multiturn_picks_max_sentinel),
         ("T1 short-circuit", case_tier_t1_no_op),
+        ("metadata lines no-halt (v1.1.2 OBS-46-02)",
+         case_synthetic_metadata_lines_do_not_halt_walk),
+        ("user-prompt halts (v1.1.2 regression guard)",
+         case_user_prompt_boundary_halts_walk),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     try:
