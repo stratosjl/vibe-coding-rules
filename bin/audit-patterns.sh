@@ -63,6 +63,18 @@ DENY_PATTERNS=(
   # === Private-network hostnames (extend as discovered) ===
   '\.internal\b'
   '\.lan\b'
+
+  # === Operator-specific external service providers ([OPERATOR-FIRM-ABBR], low-FP class) ===
+  # Added s55 POPULATION v2 batch 2 per W3 architectural decision
+  # documented in the operator's private overlay slice. High-FP-private
+  # provider names are intentionally NOT in this list to avoid publishing
+  # those relationships through this pattern file. W2 (per-operator
+  # private DENY layer) deferred to a future vc-roe session.
+  '[external-svc-A]'
+  '[external-svc-B]'
+  '[external-svc-C]'
+  '[external-svc-D]'
+  '[external-svc-E]'
 )
 
 # Soft-warn: PROBABLY a leak but may be legitimate. Reviewer decides
