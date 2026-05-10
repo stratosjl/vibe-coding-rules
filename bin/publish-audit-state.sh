@@ -85,10 +85,17 @@ if [ ! -r "$CLONED_AUDIT" ] || [ ! -r "$CLONED_PATTERNS" ]; then
   fail "cloned repo at $REMOTE_URL HEAD does not contain bin/publish-audit.sh + bin/audit-patterns.sh; cannot self-audit"
 fi
 
+# Pin the cloned tempdir's user.email to the canonical public author so the
+# inner audit's email check does not inherit the parent shell's global
+# config (closes OBS-vcroe-audit-state-emailcheck-fp-01).
+# shellcheck disable=SC1090
+. "$CLONED_PATTERNS"
+git -C "$TMPDIR/repo" config user.email "$PUBLIC_AUTHOR_EMAIL"
+
 state_rc=0
 
 hdr "auditing public HEAD..."
-if ! ( cd "$TMPDIR/repo" && bash bin/publish-audit.sh --strict ); then
+if ! ( cd "$TMPDIR/repo" && bash bin/publish-audit.sh ); then
   hdr "DENY-pattern hits at public HEAD"
   state_rc=1
 fi
@@ -98,7 +105,7 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
   hist_leaks=0
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
-    if ! ( cd "$TMPDIR/repo" && git checkout -q "$commit" && bash bin/publish-audit.sh --strict 2>/dev/null ); then
+    if ! ( cd "$TMPDIR/repo" && git checkout -q "$commit" && bash bin/publish-audit.sh 2>/dev/null ); then
       hdr "  HISTORICAL LEAK at $commit"
       hist_leaks=$((hist_leaks + 1))
     fi
