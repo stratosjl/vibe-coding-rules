@@ -35,16 +35,16 @@ DENY_PATTERNS=(
   '[INT-F]'
 
   # === Personal / private project folder paths ===
-  # NOTE: bare '[INT-A]' and '[INT-H]' are NOT in DENY (they appear in
-  # the public repo at v1.1.3 baked into hook log messages + CHANGELOG +
-  # methodology-content as forensic context tags). They live in WARN
-  # below pending the dedicated scrub-and-remediate session
-  # (OBS-vcroe-historical-leak-01). Path-prefixed forms are still hard
-  # deny because they encode operator's filesystem layout, which is
-  # different from the project name being mentioned in prose.
-  'OWN/[EXAMPLE-PROJ]'
+  '[OWN-PRIV]/[INT-H]'
   '[OWN-PRIV]/[OPERATOR-NAME]'
   '[OWN-PRIV]/[OPERATOR-FIRM-GR]'
+
+  # === Operator-internal project codenames ===
+  # Promoted from WARN to DENY at v1.2.0 after the OBS-vcroe-historical-leak-01
+  # history rewrite scrubbed both names out of every pre-v1.2.0 commit. Future
+  # leaks of either codename in any public commit are blocked at pre-push.
+  '[INT-G]'
+  '[INT-H]'
 
   # === [OPERATOR-FIRM-ABBR] client identifiers (sourced from observed project-dir names) ===
   '[OPERATOR-CLIENT-A]'
@@ -82,14 +82,6 @@ WARN_PATTERNS=(
   # might not be.
   'Tiered Methodology Consolidation'
   'HCMC'                             # supervised authority; legitimate to mention; flag for eyeball
-
-  # === Project-name forensic tags found in the public repo at v1.1.3 ===
-  # These are scheduled for scrub in a dedicated remediation session per
-  # OBS-vcroe-historical-leak-01 (gate decision: surface, don't
-  # auto-remediate). Promoted to DENY once history is rewritten or
-  # references are anonymised.
-  '[INT-A]'                       # FOUND IN PUBLIC v1.1.3: hooks/stop.py, test-heartbeat.py, CHANGELOG.md
-  '[INT-H]'                          # FOUND IN PUBLIC v1.1.3: hooks/post-tool-use.py, methodology-content/T*.md, CHANGELOG.md
 )
 
 # Public author email expected on every public-repo commit. The pre-push

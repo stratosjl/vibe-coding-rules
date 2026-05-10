@@ -4,6 +4,22 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.2.0 - 2026-05-10
+
+Closes `OBS-vcroe-historical-leak-01`. Two operator-internal project codenames baked into the public repo at the v1.1.0 baseline (and surfaced as 21 of the 113 WARN hits at v1.1.5) have been scrubbed from every pre-v1.2.0 commit via a `git filter-repo --replace-text` history rewrite, with both codename patterns now promoted from `WARN_PATTERNS` to `DENY_PATTERNS` in `bin/audit-patterns.sh` so any future leak is blocked at pre-push. Minor-class semver to signal the commit-hash discontinuity (every commit on `main` now has a different SHA than at v1.1.5; tags `v1.1.2` through `v1.1.5` re-pointed at the rewritten signed commits). No functional change to the plugin runtime.
+
+What changed:
+
+- **History rewrite via `git filter-repo --replace-text`.** All eight commits on `main` from `Initial public release of vc-roe v1.1.0` through `v1.1.5` were rewritten with two textual substitutions, replacing the two operator-internal codenames with opaque placeholders (`[INT-A]` and `[EXAMPLE-PROJ]`) across CHANGELOG narrative, code-comment forensic tags, methodology-content pedagogical examples, and one test-fixture docstring. After the substitution, every rewritten commit was re-created via `git filter-branch --commit-filter 'git commit-tree -S "$@"'` so all eight commits carry the new SSH-key signature (`SHA256:/2bwM1kx6Rk…`). Annotated signed tags `v1.1.2`–`v1.1.5` were re-created at the new commit hashes with their original messages preserved (the v1.1.2 tag annotation itself contained one residual codename reference that the in-tree-only regex did not catch; that reference was scrubbed in the re-created tag message). `git push --force-with-lease=main:b91c565…` against `origin/main` and `git push --force --tags origin` landed the rewritten tree.
+- **Both codename patterns promoted from `WARN_PATTERNS` to `DENY_PATTERNS` in `bin/audit-patterns.sh`.** Future commits attempting either codename are blocked at pre-push by `bin/publish-audit.sh`. The path-prefix DENY entry for the second codename (which was inadvertently substituted to its placeholder form by the regex during the history rewrite, because the regex matched with non-word boundaries on either side) is restored to its original semantic form. The WARN-block "scheduled for scrub" comments are removed.
+- **`ROUTINE_VERSION` bumped to `1.2.0`** across all four hooks; `.claude-plugin/plugin.json` `version` field bumped to match. Hook code byte-identical to rewritten v1.1.5 aside from the constant.
+
+What this does NOT change: pre-rewrite commit hashes (e.g. `b91c565`, `a44d819`, `5ef1add`) remain visible via direct URL on GitHub for some time before garbage collection runs, per GitHub's standard semantics. A local backup ref `pre-leak-scrub-backup-20260510` retains the pre-rewrite tree for any forensic recovery; this ref is local-only and not pushed. Plugin runtime and hook behaviour are unchanged from v1.1.5; the codename substitutions land only in code comments, log strings, CHANGELOG narrative, and methodology-content pedagogical examples — never in execution paths.
+
+What this WILL change for any external clones: every existing clone diverges from `origin/main`. `git fetch && git reset --hard origin/main` syncs a clone to the rewritten tree (this repo's standard sync recipe). At publication time of v1.2.0 the maintainer was the only known user; if any forks or downstream consumers exist, they need the same reset.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.1.5 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.2.0 cleanly. (Hook code is byte-identical aside from the `ROUTINE_VERSION` constant; the practical effect of staying on v1.1.5 hooks is only the version field reported in log entries.)
+
 ## 1.1.5 - 2026-05-10
 
 Closes OBS-vcroe-audit-state-emailcheck-fp-01 (false-positive DENY on `git config user.email`) and the related semantic asymmetry between pre-push and post-publish audit exit-criteria surfaced during the s52 audit-pass discharge. Patch-class semver (no plugin runtime change; hook code byte-identical to v1.1.4 aside from the lockstep `ROUTINE_VERSION` constant).
