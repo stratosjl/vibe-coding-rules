@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import sys
 import time
 from pathlib import Path
@@ -71,11 +72,18 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.2.1"
+ROUTINE_VERSION = "1.3.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
 TIER_FLOOR_PREVIOUS_FILENAME = "methodology-tier-floor.previous"
+
+# v1.3.0: chat-claim primitive (multi-chat-access protection per
+# OBS-vcroe-multi-chat-contamination-01). SessionStart acquires; Stop
+# refreshes ts per turn; SessionEnd releases; TTL reaps orphans.
+CLAIM_FILENAME = "chat-claim.json"
+CLAIM_TTL_ENV_VAR = "VC_ROE_CLAIM_TTL_HOURS"
+DEFAULT_CLAIM_TTL_HOURS = 8.0
 
 
 def load_rules() -> dict[str, Any]:
@@ -408,6 +416,128 @@ def append_log(entry: dict[str, Any]) -> None:
         pass
 
 
+def claim_path(cwd: Path) -> Path:
+    cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(cwd.resolve()))  # OBS-MET-AJ
+    return Path.home() / ".claude" / "projects" / cwd_dashed / CLAIM_FILENAME
+
+
+def claim_ttl_hours() -> float:
+    raw = os.environ.get(CLAIM_TTL_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_CLAIM_TTL_HOURS
+    try:
+        v = float(raw)
+        if v <= 0:
+            return DEFAULT_CLAIM_TTL_HOURS
+        return v
+    except ValueError:
+        return DEFAULT_CLAIM_TTL_HOURS
+
+
+def read_claim(cwd: Path) -> Optional[dict[str, Any]]:
+    path = claim_path(cwd)
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_claim(cwd: Path, session_id: str, ts: int, host: str) -> bool:
+    path = claim_path(cwd)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"session_id": session_id, "ts": ts, "host": host}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+            f.write("\n")
+        return True
+    except Exception:
+        return False
+
+
+def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
+                   now: int, ttl_hours: float) -> tuple[str, dict[str, Any]]:
+    """Decide what to do with an existing chat-claim.
+
+    Returns (action, info) where action is one of:
+        "take-new"     no existing claim; acquire fresh.
+        "resume"       claim's session_id matches current; refresh ts.
+        "take-orphan"  claim exists but TTL-expired or corrupt; take over.
+        "refuse"       claim exists, valid, owned by another live session;
+                       refuse this session and surface conflict.
+    """
+    if not claim or not isinstance(claim, dict):
+        return ("take-new", {"reason": "no-existing-claim"})
+    other_session = str(claim.get("session_id", "") or "")
+    other_host = str(claim.get("host", "?") or "?")
+    other_ts_raw = claim.get("ts", 0)
+    try:
+        other_ts = int(other_ts_raw)
+    except (TypeError, ValueError):
+        return ("take-orphan", {
+            "reason": "corrupt-ts",
+            "other_session": other_session,
+            "other_host": other_host,
+        })
+    info: dict[str, Any] = {
+        "other_session": other_session,
+        "other_host": other_host,
+        "other_ts": other_ts,
+    }
+    if other_session == current_session:
+        info["reason"] = "same-session-resume"
+        return ("resume", info)
+    age_seconds = max(0, now - other_ts)
+    ttl_seconds = int(ttl_hours * 3600)
+    info["age_seconds"] = age_seconds
+    info["ttl_seconds"] = ttl_seconds
+    if age_seconds >= ttl_seconds:
+        info["reason"] = "ttl-expired"
+        return ("take-orphan", info)
+    info["reason"] = "active-claim-conflict"
+    return ("refuse", info)
+
+
+def claim_refuse_banner(info: dict[str, Any], ttl_hours: float,
+                        cwd: Path) -> str:
+    other = info.get("other_session", "?")
+    other_short = (other[:8] + "...") if isinstance(other, str) and len(other) > 12 else other
+    other_host = info.get("other_host", "?")
+    other_ts = info.get("other_ts", 0)
+    age_s = int(info.get("age_seconds", 0))
+    age_h = age_s / 3600.0
+    file_path = claim_path(cwd)
+    return (
+        "## CHAT-CLAIM CONFLICT (top-priority instruction)\n\n"
+        "Another Claude Code session holds an active chat-claim on this "
+        f"project. The claim is {age_h:.2f}h old; TTL is {ttl_hours:.1f}h.\n\n"
+        f"- Owning session_id: `{other_short}` (host `{other_host}`, "
+        f"ts {other_ts})\n"
+        f"- Claim file: `{file_path}`\n"
+        f"- TTL override env var: `{CLAIM_TTL_ENV_VAR}` "
+        f"(currently {ttl_hours:.1f}h)\n\n"
+        "**You MUST**:\n"
+        "1. Output the literal first-line tier banner per the methodology "
+        "slice below (format compliance is preserved).\n"
+        "2. Then surface this CHAT-CLAIM CONFLICT to the operator as your "
+        "first prose response. Cite the owning session_id, host, and age.\n"
+        "3. Halt all file modifications, all git mutations, and all "
+        "package operations within this project root. Read-only "
+        "investigation (`git status`, `git log`, file reads) is "
+        "permitted to characterise current state, but treat the working "
+        "tree as a shared resource you do not own.\n"
+        "4. Suggest the operator either: (a) close the owning chat (its "
+        "SessionEnd hook will release the claim cleanly), (b) wait for "
+        "TTL to expire and reopen this session, OR (c) manually delete "
+        f"the claim file at `{file_path}` if the owning chat is known "
+        "to be dead (process killed, host rebooted).\n\n"
+        "---\n\n"
+    )
+
+
 def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str) -> None:
     """Heartbeat-enforcement anchor (D-MET-39, v0.1.7).
 
@@ -514,8 +644,35 @@ def main() -> int:
     label = label_for(s, c, rules)
     slice_content = load_slice(tier)
 
+    # v1.3.0: chat-claim acquire (multi-chat-access protection per
+    # OBS-vcroe-multi-chat-contamination-01). SessionStart writes a claim
+    # file to the project memory dir; if a conflicting claim younger than
+    # CLAIM_TTL_HOURS exists, prepend a refusal banner to additionalContext
+    # so the assistant halts mutations on the working tree. Stop refreshes
+    # the claim ts (keeps it alive during active use); SessionEnd deletes
+    # the claim (clean release on chat close); TTL reaps orphans.
+    session_id = str(event.get("session_id") or "")
+    ttl_hours = claim_ttl_hours()
+    claim_action = "no-session-id"
+    claim_info: dict[str, Any] = {}
+    claim_banner_text = ""
+    if session_id:
+        try:
+            host = socket.gethostname()
+        except Exception:
+            host = "?"
+        existing_claim = read_claim(cwd)
+        claim_action, claim_info = evaluate_claim(
+            existing_claim, session_id, int(started), ttl_hours
+        )
+        if claim_action == "refuse":
+            claim_banner_text = claim_refuse_banner(claim_info, ttl_hours, cwd)
+        else:
+            write_claim(cwd, session_id, int(started), host)
+
     sc_trace = f"({s}/{c})" if s and c else "(override)"
     additional = (
+        f"{claim_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
         f"{slice_content}\n\n"
         f"## Tier detection trace\n"
@@ -528,6 +685,8 @@ def main() -> int:
         f"- project_root: {detection.get('project_root', str(cwd))}\n"
         f"- git_root_found: {detection.get('git_root_found', False)}\n"
         f"- routine_version: {ROUTINE_VERSION}\n"
+        f"- chat_claim_action: {claim_action}\n"
+        f"- chat_claim_ttl_hours: {ttl_hours}\n"
     )
 
     output = {
@@ -561,6 +720,9 @@ def main() -> int:
         "project_root": detection.get("project_root", str(cwd)),
         "git_root_found": detection.get("git_root_found", False),
         "routine_version": ROUTINE_VERSION,
+        "chat_claim_action": claim_action,
+        "chat_claim_info": claim_info,
+        "chat_claim_ttl_hours": ttl_hours,
     })
     return 0
 

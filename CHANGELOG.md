@@ -4,6 +4,25 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.3.0 - 2026-05-10
+
+Closes `OBS-vcroe-multi-chat-contamination-01`. Adds a chat-claim primitive so multiple Claude Code chats opened against the same project cannot silently contaminate each other's working tree. Minor-class semver because new hook behaviour is added (a SessionEnd hook entry, plus new content blocks in session-start.py and stop.py).
+
+What changed:
+
+- **SessionStart acquires a chat-claim.** On every session open, `hooks/session-start.py` writes a JSON claim file at `~/.claude/projects/<cwd-dashed>/chat-claim.json` containing `{"session_id": ..., "ts": ..., "host": ...}`. If a claim from a different session already exists and is younger than the configured TTL (default 8 hours, override via env var `VC_ROE_CLAIM_TTL_HOURS`), SessionStart prepends a `## CHAT-CLAIM CONFLICT` banner above the methodology slice so the assistant halts mutations and surfaces the conflict to the operator. Same-session resumes refresh the ts; stale orphans (TTL-expired or corrupt) are taken over without prompting.
+- **Stop hook refreshes the claim ts per turn.** `hooks/stop.py` now refreshes the claim's ts on every assistant-turn-end so the claim stays alive across long user-think-time gaps. Refresh fires before any early-return path (no transcript / no anchor / silent-stop block) so claim hygiene is independent of heartbeat-cadence logic. Stop never deletes another session's claim.
+- **New SessionEnd hook releases the claim cleanly.** `hooks/session-end.py` (added) fires on chat close and deletes the claim file iff its session_id matches the calling SessionEnd's session_id. Mismatch (another session has taken over via TTL) is a no-op. Corrupt claims are deleted defensively.
+- **`hooks/hooks.json` registers the SessionEnd hook entry.** Confirmed `SessionEnd` is a supported event in Claude Code 2.1.138.
+- **`test-chat-claim.py` added.** 11-case regression suite covering: take-new (no existing claim), same-session resume, refuse on within-TTL conflict, take-orphan on past-TTL conflict, take-orphan on corrupt JSON, env-var TTL override, Stop refreshes own claim, Stop leaves other-session claim alone, SessionEnd releases own claim, SessionEnd does not release other-session claim, SessionEnd no-session-id no-op. 36 assertions; all pass at v1.3.0.
+- **`ROUTINE_VERSION` bumped to `1.3.0`** across all five hooks (session-start, user-prompt-submit, post-tool-use, stop, session-end); `.claude-plugin/plugin.json` `version` field bumped to match.
+
+What this does NOT change: existing tier-detection logic, heartbeat-cadence semantics, silent-stop blocker (OBS-50-01), or any pre-push / post-publish audit behaviour. Hook code in `user-prompt-submit.py` and `post-tool-use.py` is byte-identical to v1.2.1 aside from the lockstep `ROUTINE_VERSION` constant. The chat-claim file lives entirely under the operator's `~/.claude/projects/...` tree; it is not git-tracked and not part of any project's working tree.
+
+Why now: at session 54 close the operator observed empirically that another chat had committed s55-prep work into the working tree between s54 close and s55 open, contaminating session-handover sequencing. The pattern materialized again between s54 close and s55 open (commit `b6eea7b`, the W3 service-provider DENY-pattern adds, was authored by a sibling chat). Operator directive: "for the next session schedule to implement the simplest way to have multi-chat access to modifications to vc-roe. i can see that each chat contaminates the other".
+
+Operator-side action required to pick up v1.3.0 hooks: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.2.1 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.3.0 cleanly.
+
 ## 1.2.1 - 2026-05-10
 
 Closes `OBS-vcroe-publish-audit-overlay-fp-01`. The pre-publish leak scan in `bin/publish-audit.sh` now uses `git grep` instead of `grep -rnE` so it scans only git-tracked files. The previous behaviour walked the entire working-tree filesystem and picked up gitignored operator-side overlay files (most prominently `methodology-content/T4-[OPERATOR].md`, an operator-private addon that is gitignored but lives inside the working tree) as phantom DENY-pattern hits, blocking pre-push with up to 54 false-positive deny hits per run. The temp-move-aside workaround used during the v1.2.0 ship-cycle is no longer needed; future ships run pre-push cleanly with the overlay applied. Patch-class semver (no plugin runtime change; hook code byte-identical to v1.2.0 aside from the lockstep `ROUTINE_VERSION` constant).

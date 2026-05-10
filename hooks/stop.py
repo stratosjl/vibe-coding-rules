@@ -56,11 +56,20 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.2.1"
+ROUTINE_VERSION = "1.3.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 UPS_MARKER_PREFIX = "claude-methodology-current-session-"
+
+# v1.3.0: chat-claim refresh (multi-chat-access protection per
+# OBS-vcroe-multi-chat-contamination-01). Stop fires per turn and
+# refreshes our own claim's ts; this keeps the claim "alive" across long
+# user-think-time gaps so a sibling chat opening during that gap is
+# correctly refused. SessionEnd deletes the claim cleanly; TTL reaps
+# orphans. Refresh fires unconditionally so claim hygiene is independent
+# of the heartbeat / silent-stop logic that may early-return.
+CLAIM_FILENAME = "chat-claim.json"
 
 SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+\d+m\]")
 
@@ -72,6 +81,42 @@ def append_log(entry: dict[str, Any]) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def claim_path_for(cwd_raw: Optional[str]) -> Optional[Path]:
+    if not cwd_raw:
+        return None
+    try:
+        cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(Path(cwd_raw).resolve()))  # OBS-MET-AJ
+        return Path.home() / ".claude" / "projects" / cwd_dashed / CLAIM_FILENAME
+    except Exception:
+        return None
+
+
+def refresh_claim(session_id: str, cwd_raw: Optional[str], now: int) -> str:
+    """Refresh own claim's ts. Returns 'refreshed' / 'not-owner' / 'no-claim' / 'error' / 'no-cwd' / 'no-session-id'."""
+    if not session_id:
+        return "no-session-id"
+    path = claim_path_for(cwd_raw)
+    if not path:
+        return "no-cwd"
+    if not path.is_file():
+        return "no-claim"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            claim = json.load(f)
+    except Exception:
+        return "error"
+    if not isinstance(claim, dict) or claim.get("session_id") != session_id:
+        return "not-owner"
+    claim["ts"] = now
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(claim, f)
+            f.write("\n")
+        return "refreshed"
+    except Exception:
+        return "error"
 
 
 def check_marker_mismatch(session_id: str, cwd_raw: Optional[str]) -> None:
@@ -282,7 +327,20 @@ def main() -> int:
 
     session_id = event.get("session_id") or ""
     transcript_path = event.get("transcript_path") or ""
+
+    # v1.3.0: refresh chat-claim ts before any early-return paths so claim
+    # hygiene is independent of transcript / anchor availability.
+    claim_status = refresh_claim(session_id, event.get("cwd"), int(started))
+
     if not session_id or not transcript_path:
+        append_log({
+            "ts": time.time(),
+            "hook": "stop",
+            "session_id": session_id,
+            "phase": "early-return-no-session-or-transcript",
+            "claim_status": claim_status,
+            "routine_version": ROUTINE_VERSION,
+        })
         return 0
 
     check_marker_mismatch(session_id, event.get("cwd"))
@@ -331,6 +389,7 @@ def main() -> int:
             "session_id": session_id,
             "blocked": True,
             "reason": "silent-stop",
+            "claim_status": claim_status,
             "routine_version": ROUTINE_VERSION,
         })
         return 0
