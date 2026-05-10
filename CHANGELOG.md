@@ -4,6 +4,19 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.2.1 - 2026-05-10
+
+Closes `OBS-vcroe-publish-audit-overlay-fp-01`. The pre-publish leak scan in `bin/publish-audit.sh` now uses `git grep` instead of `grep -rnE` so it scans only git-tracked files. The previous behaviour walked the entire working-tree filesystem and picked up gitignored operator-side overlay files (most prominently `methodology-content/T4-[OPERATOR].md`, an operator-private addon that is gitignored but lives inside the working tree) as phantom DENY-pattern hits, blocking pre-push with up to 54 false-positive deny hits per run. The temp-move-aside workaround used during the v1.2.0 ship-cycle is no longer needed; future ships run pre-push cleanly with the overlay applied. Patch-class semver (no plugin runtime change; hook code byte-identical to v1.2.0 aside from the lockstep `ROUTINE_VERSION` constant).
+
+What changed:
+
+- **`bin/publish-audit.sh` scans git-tracked files only.** Both the DENY loop (line 55) and the WARN loop (line 65) replace `grep -rnE "$pat" .` with `git grep -nE "$pat"`. The downstream `grep -vE "$SCAN_EXCLUDE"` filter and the formatting / counting pipeline are unchanged. The fresh-clone post-publish state audit at `bin/publish-audit-state.sh` is unaffected because it operates inside a temp-clone of the public repo where no untracked overlay files exist; its tracked-file output set is identical to before.
+- **`ROUTINE_VERSION` bumped to `1.2.1`** across all four hooks; `.claude-plugin/plugin.json` `version` field bumped to match. Hook code is byte-identical to v1.2.0 aside from the constant.
+
+What this does NOT change: pre-push DENY pattern set; post-publish state audit semantics (still scans tracked files in a fresh clone); WARN-set output for the public commit (92 WARN at HEAD, 87 WARN per-commit in history walk, same numbers as v1.2.0). The operator-side ignore-pattern that hides `T4-[OPERATOR].md` from `--exclude-standard` listings is unrelated to this fix and remains in place.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.2.0 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.2.1 cleanly. (Hook code is byte-identical aside from the `ROUTINE_VERSION` constant; the practical effect of staying on v1.2.0 hooks is only the version field reported in log entries.)
+
 ## 1.2.0 - 2026-05-10
 
 Closes `OBS-vcroe-historical-leak-01`. Two operator-internal project codenames baked into the public repo at the v1.1.0 baseline (and surfaced as 21 of the 113 WARN hits at v1.1.5) have been scrubbed from every pre-v1.2.0 commit via a `git filter-repo --replace-text` history rewrite, with both codename patterns now promoted from `WARN_PATTERNS` to `DENY_PATTERNS` in `bin/audit-patterns.sh` so any future leak is blocked at pre-push. Minor-class semver to signal the commit-hash discontinuity (every commit on `main` now has a different SHA than at v1.1.5; tags `v1.1.2` through `v1.1.5` re-pointed at the rewritten signed commits). No functional change to the plugin runtime.
