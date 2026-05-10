@@ -52,7 +52,7 @@ warn_hits=0
 
 hdr "scanning for hard-deny patterns"
 for pat in "${DENY_PATTERNS[@]}"; do
-  matches=$(grep -rnE "$pat" . 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
+  matches=$(git grep -nE "$pat" 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
   if [ -n "$matches" ]; then
     hit "DENY pattern '$pat':"
     echo "$matches" | sed 's/^/    /'
@@ -62,7 +62,7 @@ done
 
 hdr "scanning for warning patterns"
 for pat in "${WARN_PATTERNS[@]}"; do
-  matches=$(grep -rnE "$pat" . 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
+  matches=$(git grep -nE "$pat" 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
   if [ -n "$matches" ]; then
     hit "WARN pattern '$pat':"
     echo "$matches" | sed 's/^/    /'
