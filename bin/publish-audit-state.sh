@@ -8,11 +8,20 @@
 # bin/publish-audit.sh) so the two audits cannot drift apart.
 #
 # Usage:
-#   bash bin/publish-audit-state.sh             # scan origin/main HEAD
-#   bash bin/publish-audit-state.sh --history   # walk every commit on main
+#   bash bin/publish-audit-state.sh                     # scan origin/main HEAD
+#   bash bin/publish-audit-state.sh --history           # walk every commit on main
+#   bash bin/publish-audit-state.sh --json-out FILE     # HEAD + history; write JSON to FILE
 #
 # Exits non-zero on any DENY hit. Optional --history walk treats every
 # historical leak the same way as a current-HEAD leak.
+#
+# --json-out FILE implies --history. Atomically writes a single-line JSON
+# object to FILE with the shape:
+#   {"ts": <epoch>, "head_sha": "<sha>", "deny_count": N, "warn_count": M,
+#    "history_walk_clean": true|false}
+# Designed for a user crontab broadcast that the SessionStart hook reads at
+# session-open to surface a "publish-state:" trace line (v1.4.0,
+# OBS-vcroe-coordination-cron-broadcast-01 closure).
 
 set -uo pipefail
 
@@ -51,7 +60,35 @@ case "$REMOTE_URL_RAW" in
 esac
 
 WALK_HISTORY=0
-if [ "${1:-}" = "--history" ]; then
+JSON_OUT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --history)
+      WALK_HISTORY=1
+      shift
+      ;;
+    --json-out)
+      if [ "$#" -lt 2 ]; then
+        printf '[publish-audit-state] FATAL: --json-out requires a path argument\n' >&2
+        exit 2
+      fi
+      JSON_OUT="$2"
+      shift 2
+      ;;
+    --json-out=*)
+      JSON_OUT="${1#--json-out=}"
+      shift
+      ;;
+    *)
+      printf '[publish-audit-state] FATAL: unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# --json-out implies --history: the JSON shape carries history_walk_clean,
+# so a non-history run cannot populate that field truthfully.
+if [ -n "$JSON_OUT" ]; then
   WALK_HISTORY=1
 fi
 
@@ -74,6 +111,12 @@ else
   git clone --quiet --depth=1 "$REMOTE_URL" "$TMPDIR/repo"
 fi
 
+# Capture public HEAD sha BEFORE any checkout walks; the --history loop
+# below leaves the working tree at the last historical commit, so a late
+# `git rev-parse HEAD` would mis-report the broadcast head_sha.
+PUBLIC_HEAD_SHA=$( ( cd "$TMPDIR/repo" && git rev-parse HEAD ) 2>/dev/null || echo 'unknown' )
+PUBLIC_HEAD_SHA=$(printf '%s' "$PUBLIC_HEAD_SHA" | tr -d '\n')
+
 # The cloned tree's bin/publish-audit.sh is what we run, so the audit
 # uses the public repo's own pattern list at HEAD. We deliberately do
 # NOT run the local-tree publish-audit.sh against the cloned tree —
@@ -93,16 +136,33 @@ fi
 git -C "$TMPDIR/repo" config user.email "$PUBLIC_AUTHOR_EMAIL"
 
 state_rc=0
+head_deny_count=0
+head_warn_count=0
+hist_leaks=0
+history_walked=0
 
 hdr "auditing public HEAD..."
-if ! ( cd "$TMPDIR/repo" && bash bin/publish-audit.sh ); then
+head_audit_output=$( ( cd "$TMPDIR/repo" && bash bin/publish-audit.sh ) 2>&1 ) || state_rc=1
+printf '%s\n' "$head_audit_output"
+if printf '%s\n' "$head_audit_output" | grep -qE '^\[publish-audit\][[:space:]]+deny hits:'; then
+  head_deny_count=$(printf '%s\n' "$head_audit_output" \
+    | grep -E '^\[publish-audit\][[:space:]]+deny hits:' \
+    | head -1 \
+    | sed -E 's/.*deny hits:[[:space:]]+([0-9]+).*/\1/')
+fi
+if printf '%s\n' "$head_audit_output" | grep -qE '^\[publish-audit\][[:space:]]+warn hits:'; then
+  head_warn_count=$(printf '%s\n' "$head_audit_output" \
+    | grep -E '^\[publish-audit\][[:space:]]+warn hits:' \
+    | head -1 \
+    | sed -E 's/.*warn hits:[[:space:]]+([0-9]+).*/\1/')
+fi
+if [ "$state_rc" -ne 0 ]; then
   hdr "DENY-pattern hits at public HEAD"
-  state_rc=1
 fi
 
 if [ "$WALK_HISTORY" -eq 1 ]; then
+  history_walked=1
   hdr "walking history (--history)..."
-  hist_leaks=0
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
     if ! ( cd "$TMPDIR/repo" && git checkout -q "$commit" && bash bin/publish-audit.sh 2>/dev/null ); then
@@ -116,6 +176,33 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
     state_rc=1
   else
     hdr "history walk clean: no historical leaks"
+  fi
+fi
+
+# v1.4.0: JSON broadcast for the SessionStart trace consumer
+# (OBS-vcroe-coordination-cron-broadcast-01 closure). Always written when
+# --json-out is set, regardless of state_rc, so the consumer sees the
+# bad-state record rather than a stale clean one.
+if [ -n "$JSON_OUT" ]; then
+  HEAD_SHA="$PUBLIC_HEAD_SHA"
+  if [ "$history_walked" -eq 1 ] && [ "$hist_leaks" -eq 0 ]; then
+    HIST_CLEAN_JSON=true
+  else
+    HIST_CLEAN_JSON=false
+  fi
+  JSON_TMP="${JSON_OUT}.tmp.$$"
+  if printf '{"ts": %s, "head_sha": "%s", "deny_count": %s, "warn_count": %s, "history_walk_clean": %s}\n' \
+       "$(date +%s)" "$HEAD_SHA" "$head_deny_count" "$head_warn_count" "$HIST_CLEAN_JSON" \
+       > "$JSON_TMP" 2>/dev/null; then
+    if mv -f "$JSON_TMP" "$JSON_OUT" 2>/dev/null; then
+      hdr "wrote JSON broadcast to $JSON_OUT"
+    else
+      rm -f "$JSON_TMP" 2>/dev/null || true
+      hdr "WARNING: could not move JSON broadcast into place at $JSON_OUT"
+    fi
+  else
+    rm -f "$JSON_TMP" 2>/dev/null || true
+    hdr "WARNING: could not write JSON broadcast tmpfile $JSON_TMP"
   fi
 fi
 

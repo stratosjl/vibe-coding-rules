@@ -72,7 +72,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.3.1"
+ROUTINE_VERSION = "1.4.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
@@ -84,6 +84,15 @@ TIER_FLOOR_PREVIOUS_FILENAME = "methodology-tier-floor.previous"
 CLAIM_FILENAME = "chat-claim.json"
 CLAIM_TTL_ENV_VAR = "VC_ROE_CLAIM_TTL_HOURS"
 DEFAULT_CLAIM_TTL_HOURS = 8.0
+
+# v1.4.0: publish-state broadcast (OBS-vcroe-coordination-cron-broadcast-01
+# closure). A user crontab is expected to run `bash bin/publish-audit-state.sh
+# --json-out PUBLISH_STATE_PATH` periodically; SessionStart reads the JSON
+# at session-open and surfaces a one-line `publish_state:` trace so the
+# operator sees post-publish leak-state freshness without re-running the
+# audit by hand. Read-only; never written by this hook.
+PUBLISH_STATE_PATH = Path.home() / ".claude" / "vc-roe-publish-state.json"
+PUBLISH_STATE_STALE_MINUTES = 65  # 30 min cadence + 35 min grace
 
 
 def load_rules() -> dict[str, Any]:
@@ -329,6 +338,14 @@ def write_tier_floor(cwd: Path, floor: str) -> None:
 
 
 def detect_tier(cwd: Path, env: dict[str, str], rules: dict[str, Any]) -> dict[str, Any]:
+    # v1.4.0 OBS-vcroe-tier-banner-no-scope-when-override-01 closure
+    # (reading 1, intentional-design). When tier is set via override
+    # (CLAUDE.md sentinel, .claude/methodology.json, or CLAUDE_TIER env),
+    # scope and crit are returned as None and surfaced as "n/a" in the
+    # trace block and the first-line tier banner. Reporting computed S/C
+    # alongside an override would conflate the operator-decided override
+    # path with the signal-driven auto-detect path and mislead the reader
+    # about which one drove the effective tier. The "n/a" is by design.
     max_levels = rules.get("max_walk_levels", 6)
     git_root = find_git_root(cwd, max_levels)
     project_root = git_root or cwd
@@ -538,6 +555,68 @@ def claim_refuse_banner(info: dict[str, Any], ttl_hours: float,
     )
 
 
+def read_publish_state() -> Optional[dict[str, Any]]:
+    """v1.4.0: read the cron-written publish-audit-state JSON broadcast.
+
+    Returns the parsed dict, or None if the file is absent / unreadable /
+    malformed. Caller decides freshness via PUBLISH_STATE_STALE_MINUTES.
+    """
+    try:
+        if not PUBLISH_STATE_PATH.is_file():
+            return None
+        with open(PUBLISH_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def format_publish_state(state: Optional[dict[str, Any]], now: int) -> str:
+    """Render a one-line publish-state trace.
+
+    Possible shapes:
+      "absent (cron not configured; see CHANGELOG v1.4.0)"
+      "corrupt (<reason>)"
+      "stale (last broadcast T-<N>m, threshold <T>m)"
+      "DENY hits=<K> as of T-<N>m (<W> WARN, history <state>)"
+      "history-dirty as of T-<N>m (<W> WARN, HEAD clean)"
+      "clean as of T-<N>m (<W> WARN, history clean)"
+    """
+    if not state or not isinstance(state, dict):
+        return "absent (cron not configured; see CHANGELOG v1.4.0)"
+    ts_raw = state.get("ts", None)
+    if ts_raw is None:
+        return "corrupt (ts missing)"
+    try:
+        ts_int = int(ts_raw)
+    except (TypeError, ValueError):
+        return "corrupt (ts not int)"
+    age_seconds = max(0, now - ts_int)
+    age_min = age_seconds // 60
+    if age_min > PUBLISH_STATE_STALE_MINUTES:
+        return f"stale (last broadcast T-{age_min}m, threshold {PUBLISH_STATE_STALE_MINUTES}m)"
+    deny_raw = state.get("deny_count", None)
+    warn_raw = state.get("warn_count", None)
+    hist_clean = state.get("history_walk_clean", None)
+    try:
+        deny = int(deny_raw) if deny_raw is not None else None
+    except (TypeError, ValueError):
+        deny = None
+    try:
+        warn = int(warn_raw) if warn_raw is not None else None
+    except (TypeError, ValueError):
+        warn = None
+    if deny is None or warn is None:
+        return "corrupt (counts missing)"
+    if deny > 0:
+        hist_txt = "history clean" if hist_clean is True else (
+            "history dirty" if hist_clean is False else "history unknown"
+        )
+        return f"DENY hits={deny} as of T-{age_min}m ({warn} WARN, {hist_txt})"
+    if hist_clean is False:
+        return f"history-dirty as of T-{age_min}m ({warn} WARN, HEAD clean)"
+    return f"clean as of T-{age_min}m ({warn} WARN, history clean)"
+
+
 def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str) -> None:
     """Heartbeat-enforcement anchor (D-MET-39, v0.1.7).
 
@@ -671,6 +750,9 @@ def main() -> int:
             write_claim(cwd, session_id, int(started), host)
 
     sc_trace = f"({s}/{c})" if s and c else "(override)"
+    # v1.4.0: publish-state broadcast read (OBS-vcroe-coordination-cron-broadcast-01).
+    publish_state = read_publish_state()
+    publish_state_line = format_publish_state(publish_state, int(started))
     additional = (
         f"{claim_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
@@ -687,6 +769,7 @@ def main() -> int:
         f"- routine_version: {ROUTINE_VERSION}\n"
         f"- chat_claim_action: {claim_action}\n"
         f"- chat_claim_ttl_hours: {ttl_hours}\n"
+        f"- publish_state: {publish_state_line}\n"
     )
 
     output = {
