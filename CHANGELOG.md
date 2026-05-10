@@ -4,6 +4,25 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.5.0 - 2026-05-10
+
+Closes `OBS-vcroe-s55-test-method-broken-by-v1.2.1-01`. Minor-class semver because new test infrastructure lands at the repo root; no runtime code changes outside the lockstep `ROUTINE_VERSION` constant. Hook code in `session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, and `session-end.py` is byte-identical to v1.4.0 aside from that constant. `.claude-plugin/plugin.json` `version` field bumped to match.
+
+What changed:
+
+- **`test-audit-patterns.py` added at repo root.** Synthetic-fixture unit test that closes the gap left by the v1.2.1 `grep -rnE` → `git grep -nE` semantic change (which made the prior untracked-file working-tree probe invisible to `bin/publish-audit.sh`). For every regex in `DENY_PATTERNS` and `WARN_PATTERNS`, the test sources the array live from `bin/audit-patterns.sh` via bash subprocess (single source of truth), sanitizes the pattern to a literal string (stripping `\b`/`\B`, unescaping `\.`/`\s`, emitting one matching char per `[...]+` class), wraps the literal in a synthetic fixture line, and asserts `re.search(pattern, fixture)` returns a match. Unsupported regex meta surface as `ValueError`, so a future pattern using `|`, `(...)`, `{n,m}`, etc. fails the test rather than silently passing.
+- **Self-audit step inside `test-audit-patterns.py`.** After each pattern is verified, the test asserts the sanitized literal does NOT appear as a contiguous substring of the test file's own source. This means the test contains zero hard-coded pattern literals; all pattern data is sourced at runtime from `bin/audit-patterns.sh`. As a result the audit gate stays tight — `bin/publish-audit.sh` scans `test-audit-patterns.py` normally and finds zero DENY hits — and the `SCAN_EXCLUDE` list in `bin/audit-patterns.sh` is NOT modified (the T4 irreversible-loosen confirmation gate is not engaged).
+- **`ROUTINE_VERSION` bumped to `1.5.0`** across all five hooks (session-start, user-prompt-submit, post-tool-use, stop, session-end); `.claude-plugin/plugin.json` `version` field bumped to match.
+
+What this does NOT change: pre-push DENY/WARN pattern set in `bin/audit-patterns.sh`; `SCAN_EXCLUDE`; SessionStart `additionalContext` shape (`publish_state:` trace line landed at v1.4.0 and is unchanged); chat-claim primitive (v1.3.0); heartbeat-cadence semantics; tier-detection precedence; any hook runtime behaviour. Pure test-infrastructure addition.
+
+Operator-side action required to pick up v1.5.0:
+
+1. `claude plugin update vc-roe@vibe-coding-rules` writes the new files; close every Claude Code window/process and reopen so the in-memory hook snapshot is refreshed. The next session-open hook log entry will read `routine_version: "1.5.0"`.
+2. Run `python3 test-audit-patterns.py` once after pulling to confirm the 34 DENY + 8 WARN current-baseline patterns all match (or `--verbose` to see each pattern listed). The test is intended to run alongside `test-detection.py`, `test-chat-claim.py`, and `test-heartbeat.py` as part of any regression sweep before a future DENY-pattern-set change.
+
+Why now: at s56 close the operator deferred this work into v1.4.0's soak window per best practice (one work-week minimum soak before next ship). At s57 open the operator chose to ship the test-method replacement during the soak window because v1.4.0 added no new DENY patterns and the OBS row had been carrying since s54. Bundles only the test-method closure; no other work is queued for v1.5.x.
+
 ## 1.4.0 - 2026-05-10
 
 Closes `OBS-vcroe-coordination-cron-broadcast-01` (publish-state visibility from a user crontab into the SessionStart trace) and `OBS-vcroe-tier-banner-no-scope-when-override-01` (intentional-design clarification per reading 1). Minor-class semver because the SessionStart `additionalContext` gains a new `publish_state:` trace line; no breaking change to any other trace field. Hook code in `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, and `session-end.py` is byte-identical to v1.3.1 aside from the lockstep `ROUTINE_VERSION` constant.
