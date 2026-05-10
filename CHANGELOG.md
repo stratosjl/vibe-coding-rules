@@ -4,6 +4,30 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.4.0 - 2026-05-10
+
+Closes `OBS-vcroe-coordination-cron-broadcast-01` (publish-state visibility from a user crontab into the SessionStart trace) and `OBS-vcroe-tier-banner-no-scope-when-override-01` (intentional-design clarification per reading 1). Minor-class semver because the SessionStart `additionalContext` gains a new `publish_state:` trace line; no breaking change to any other trace field. Hook code in `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, and `session-end.py` is byte-identical to v1.3.1 aside from the lockstep `ROUTINE_VERSION` constant.
+
+What changed:
+
+- **`bin/publish-audit-state.sh` adds `--json-out FILE` flag.** When set, the script runs the HEAD audit plus the full `--history` walk (`--json-out` implies `--history` because the JSON payload carries `history_walk_clean`), parses `deny_count` and `warn_count` from the inner `publish-audit.sh` scan summary, captures the public HEAD sha before the history-walk checkout cycle pollutes the cloned tree, and writes a single-line JSON object atomically (write-to-tmp then rename) to FILE. JSON shape: `{"ts": <epoch>, "head_sha": "<sha>", "deny_count": N, "warn_count": M, "history_walk_clean": true|false}`. Exit code preserved (non-zero on any DENY); JSON written regardless of state_rc so a consumer reading the file sees the bad-state record rather than a stale clean one.
+- **`hooks/session-start.py` reads the JSON broadcast and emits a `publish_state:` trace line.** Constants `PUBLISH_STATE_PATH = ~/.claude/vc-roe-publish-state.json` and `PUBLISH_STATE_STALE_MINUTES = 65` (30-min cron cadence + 35-min grace). Helpers `read_publish_state()` and `format_publish_state(state, now)` cover six shapes: `absent (cron not configured; see CHANGELOG v1.4.0)`, `corrupt (<reason>)`, `stale (last broadcast T-<N>m, threshold <T>m)`, `DENY hits=<K> as of T-<N>m (<W> WARN, history <state>)`, `history-dirty as of T-<N>m (<W> WARN, HEAD clean)`, `clean as of T-<N>m (<W> WARN, history clean)`. Read-only consumer; the cron is the producer; the hook never writes the broadcast file.
+- **`hooks/session-start.py` `detect_tier()` adds the OBS-tier-banner closure note (reading 1, intentional-design).** When `tier_source != "auto"` (CLAUDE.md sentinel, `.claude/methodology.json` config, or `CLAUDE_TIER` env), scope and crit are returned as `None` and surfaced as `n/a` in the trace block and the first-line tier banner. Closes `OBS-vcroe-tier-banner-no-scope-when-override-01` with reading 1 per operator decision at s56 open: reporting computed S/C alongside an override would conflate the operator-decided override path with the signal-driven auto-detect path and mislead the reader about which drove the effective tier. The `n/a` is by design.
+- **`ROUTINE_VERSION` bumped to `1.4.0`** across all five hooks (session-start, user-prompt-submit, post-tool-use, stop, session-end); `.claude-plugin/plugin.json` `version` field bumped to match. Hook code in `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, and `session-end.py` is byte-identical to v1.3.1 aside from the constant.
+
+What this does NOT change: pre-push DENY pattern set in `bin/audit-patterns.sh`; SessionStart behaviour for any other trace field; chat-claim primitive added at v1.3.0; heartbeat-cadence semantics; existing tier-detection precedence (closer-file-wins → claude.md → config → env → auto). The cron entry is operator-side and NOT auto-installed; this ship adds the consumer-side trace-line and the producer-side `--json-out` flag only.
+
+Operator-side action required to pick up v1.4.0:
+
+1. `claude plugin update vc-roe@vibe-coding-rules` writes the new files; close every Claude Code window/process and reopen so the in-memory hook snapshot is refreshed.
+2. Add a user crontab entry to enable the broadcast:
+   ```
+   */30 * * * * cd ~/Projects/vibe-coding-rules && bash bin/publish-audit-state.sh --json-out ~/.claude/vc-roe-publish-state.json >/dev/null 2>&1
+   ```
+   Without this entry the SessionStart trace will read `publish_state: absent (cron not configured; see CHANGELOG v1.4.0)`. The first cron tick populates the broadcast; the trace line goes live at the next session-open.
+
+Why now: at s55 close operator deferred this ship from the same-day rush per D-VCROE-S55-02 and chose option β (cron broadcast) over option α (post-commit hook) or option γ (per-cwd file) at s56 open. Bundles OBS-vcroe-tier-banner-no-scope-when-override-01 closure to avoid a separate v1.3.2 ship.
+
 ## 1.3.1 - 2026-05-10
 
 Adds 5 service-provider DENY patterns to `bin/audit-patterns.sh` per the s55 POPULATION v2 batch 2 W3 architectural decision. Patch-class semver (no plugin runtime change; hook code byte-identical to v1.3.0 aside from the lockstep `ROUTINE_VERSION` constant).
