@@ -4,6 +4,19 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.3.1 - 2026-05-10
+
+Adds 5 service-provider DENY patterns to `bin/audit-patterns.sh` per the s55 POPULATION v2 batch 2 W3 architectural decision. Patch-class semver (no plugin runtime change; hook code byte-identical to v1.3.0 aside from the lockstep `ROUTINE_VERSION` constant).
+
+What changed:
+
+- **`bin/audit-patterns.sh` adds 5 DENY patterns** classified PRIVATE-add-DENY in the private-overlay slice POPULATION v2 batch 2: `'[external-svc-A]'`, `'[external-svc-B]'`, `'[external-svc-C]'`, `'[external-svc-D]'`, `'[external-svc-E]'`. Architectural decision W3: names with prohibitive false-positive risk in regulator-domain prose are NOT in this public list to avoid publishing those operator-relationship facts through the pattern file. The slice content lives in the operator-side private overlay (gitignored from public).
+- **`ROUTINE_VERSION` bumped to `1.3.1`** across all five hooks; `.claude-plugin/plugin.json` `version` field bumped to match. Hook code is byte-identical to v1.3.0 aside from the constant.
+
+What this does NOT change: the W2 alternative (per-operator private DENY layer; private overlay `audit-patterns-extra.sh` + dual-source loader in `publish-audit.sh`) remains deferred to a future ship. Pre-push DENY pattern set on the operator's local working repo gains exactly these 5 patterns; behaviour on patterns outside this set is unchanged.
+
+Plugin-snapshot reminder: `claude plugin update vc-roe@vibe-coding-rules` writes the new files but the running Claude Code process keeps invoking the v1.3.0 hooks from its in-memory snapshot. Close every Claude Code window/process and reopen to pick up v1.3.1 cleanly. (Hook code is byte-identical aside from the `ROUTINE_VERSION` constant; the practical effect of staying on v1.3.0 hooks is only the version field reported in log entries.)
+
 ## 1.3.0 - 2026-05-10
 
 Closes `OBS-vcroe-multi-chat-contamination-01`. Adds a chat-claim primitive so multiple Claude Code chats opened against the same project cannot silently contaminate each other's working tree. Minor-class semver because new hook behaviour is added (a SessionEnd hook entry, plus new content blocks in session-start.py and stop.py).
