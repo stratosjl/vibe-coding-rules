@@ -4,6 +4,24 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.7.0 - 2026-05-11
+
+Promotes the closure-lesson from `OBS-vcroe-audit-patterns-self-leak-01` (closed v1.6.0) into the canonical methodology slice as a numbered T3 rule. Minor-class semver because `methodology-content/T3.md` gains a new item 11 in the "Added at T3" list, inherited cumulatively by T4 work. No hook runtime change; no audit-pattern change; no contract-shape change.
+
+What changed:
+
+- **`methodology-content/T3.md` item 11 added: "Deferral closure-date discipline".** Architectural deferrals labelled "known risk" (leak risk, correctness risk, regulatory risk) MUST carry a date-gate, version-gate, or coupling-gate closure trigger. Open-ended "defer to future session" annotations are no longer acceptable at T3 or T4. Concrete trigger forms listed: ISO-8601 date, semver gate (e.g., "close before next minor"), coupling gate (e.g., "close before next history-rewrite ship"). References the v1.1.4-to-v1.6.0 W2 deferral (~3 weeks, 6 ship cycles, required force-with-lease and history rewrite to close) as the reference incident.
+- **`ROUTINE_VERSION` bumped to `1.7.0`** across all five hooks (`session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, `session-end.py`); `.claude-plugin/plugin.json` `version` field bumped to match.
+
+What this does NOT change: pre-push DENY/WARN pattern set in `bin/audit-patterns.sh`; the W2 split semantics from v1.6.0; SessionStart `additionalContext` shape; chat-claim primitive (v1.3.0); heartbeat-cadence semantics; tier-detection precedence; any hook runtime behaviour. Pure methodology-content addition.
+
+Operator-side action required to pick up v1.7.0:
+
+1. `claude plugin update vc-roe@vibe-coding-rules` writes the new T3.md and the bumped `ROUTINE_VERSION` constants; close every Claude Code window/process and reopen so the in-memory hook snapshot is refreshed. The next session-open hook log entry will read `routine_version: "1.7.0"`.
+2. Optional companion: create `feedback_deferral_closure_dates.md` in the operator's project memory dir with the long-form origin/rationale, matching the pattern of `feedback_audit_pass.md`, `feedback_anomaly_first_reflex.md`, etc. The plugin ships only the rule text; the long-form feedback file is operator-side.
+
+Why now: the s60 close at v1.6.0 promoted two lessons from `OBS-vcroe-audit-patterns-self-leak-01`, one of which was "architectural deferrals need closure dates". That lesson was captured in the OBS body but not yet codified into a numbered tier rule. Codifying it at v1.7.0 closes the promotion loop while still bundled inside v1.6.0's open soak window (cutoff ≥ 2026-05-18). The alternative was deferring into a separate soak window after v1.6.0 fully soaks; bundling under one soak preserves cadence ergonomics without losing the lesson.
+
 ## 1.6.0 - 2026-05-11
 
 Closes `OBS-vcroe-audit-patterns-self-leak-01` (opened s60). Minor-class semver because the audit infrastructure architecture changes (single-file → public-scaffold + gitignored overlay split) and the historical narrative is rewritten via `git filter-repo` to replace operator-flavored strings with opaque placeholders. The W3 architectural decision (gating high-FP external service provider names out of the public pattern file while leaving firm / operator / client identifiers in) is superseded by W2 (every operator-flavored DENY entry moves to the gitignored overlay; the public scaffold carries only generic patterns).
