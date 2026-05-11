@@ -1,86 +1,45 @@
 #!/usr/bin/env bash
-# audit-patterns.sh — sourceable pattern lists for the publish audit.
+# audit-patterns.sh - public scaffold for the publish audit.
 #
-# This file is sourced by both bin/publish-audit.sh (pre-push, scans the
-# local working tree) and bin/publish-audit-state.sh (post-publish, scans
-# a fresh clone of the public repo). Single source of truth for the
-# pattern set so the two audits cannot drift apart.
+# PUBLIC SCAFFOLD. Operator-flavored DENY entries live in the gitignored
+# bin/audit-patterns.local.sh (sourced below if present). The example
+# template bin/audit-patterns.local.sh.example shows the expected shape.
 #
-# Patterns are extended grep -E regexes. Add operator-specific strings
-# here as new private projects spin up; do not duplicate the list inside
-# either consumer script.
+# Sourced by both bin/publish-audit.sh (pre-push, scans the local working
+# tree) and bin/publish-audit-state.sh (post-publish, scans a fresh clone
+# of the public repo). Single source of truth for the public pattern set
+# so the two audits cannot drift apart.
+#
+# The DENY/WARN arrays defined here are intentionally minimal and generic.
+# Operator-specific patterns must be appended via the local overlay; the
+# public scaffold itself stays free of operator-flavored content so this
+# file is safe to publish on github.com.
+#
+# Architectural rationale: vc-roe v1.6.0 replaced the prior single-file
+# design (which baked operator-flavored DENY entries into a publicly-
+# committed file, creating a self-leak the in-file SCAN_EXCLUDE could not
+# prevent) with the public-scaffold + private-overlay split. The W3-to-W2
+# decision inversion is documented in the v1.6.0 CHANGELOG entry.
 #
 # Both arrays are exported so a sourcing script can iterate them after
 # the source line.
 
 # Hard-deny: NEVER allowed in a public commit. A single hit blocks the
-# push (or the post-publish scan exits non-zero).
+# push (or the post-publish scan exits non-zero). The public scaffold
+# carries only generic private-network hostname patterns; operator-
+# specific identifiers are appended by the local overlay.
 DENY_PATTERNS=(
-  # === Firm name in every form we have observed on disk ===
-  '[OPERATOR-DOMAIN]'
-  's\.laspas@[OPERATOR-DOMAIN]'
-  '[OPERATOR-FIRM]'        # spaced form
-  '[OPERATOR-FIRM]'        # encoded-path form (no spaces)
-  '[OPERATOR-FIRM-ABBR]'                          # standalone Latin acronym
-  '[OPERATOR-FIRM-GR]'                              # Greek capitals (path-safe form, used in [OWN-PRIV]/[OPERATOR-FIRM-GR])
-
-  # === Operator display name + variants ===
-  '[OPERATOR-USER]'                    # Windows native path form, no space
-  '[OPERATOR-NAME]'                       # standalone uppercase (e.g. [OPERATOR-NAME]-EE)
-  's\.laspas\b'                      # any "[OPERATOR-SUFFIX]" suffix-agnostic
-
-  # === Internal R&D project names ===
-  '[INT-D]'
-  '[INT-E]'
-  '[INT-F]'
-
-  # === Personal / private project folder paths ===
-  '[OWN-PRIV]/[INT-H]'
-  '[OWN-PRIV]/[OPERATOR-NAME]'
-  '[OWN-PRIV]/[OPERATOR-FIRM-GR]'
-
-  # === Operator-internal project codenames ===
-  # Promoted from WARN to DENY at v1.2.0 after the OBS-vcroe-historical-leak-01
-  # history rewrite scrubbed both names out of every pre-v1.2.0 commit. Future
-  # leaks of either codename in any public commit are blocked at pre-push.
-  '[INT-G]'
-  '[INT-H]'
-
-  # === [OPERATOR-FIRM-ABBR] client identifiers (sourced from observed project-dir names) ===
-  '[OPERATOR-CLIENT-A]'
-  '[OPERATOR-CLIENT-B]'
-  '[OPERATOR-PROJ-A]'
-  '[OPERATOR-PROJ-B]'
-
-  # === Operator-private filesystem path roots ===
-  '/home/[OPERATOR-USER]/Cloud'
-  '/home/[OPERATOR-USER]/Projects'
-  '***REMOVED***/[OPERATOR-DOCS]'
-  '***REMOVED*** - [OPERATOR-FIRM]'              # path fragment, spaced
-  '***REMOVED***---[OPERATOR-FIRM]'              # path fragment, encoded
-  '[OPERATOR-DOCS]'                     # operator's ***REMOVED*** doc-root anchor
-
-  # === Private-network hostnames (extend as discovered) ===
+  # Generic private-network hostnames (safe to publish; pattern shapes
+  # rather than identifiers, no false-positive surface in regulator-domain
+  # prose).
   '\.internal\b'
   '\.lan\b'
-
-  # === Operator-specific external service providers ([OPERATOR-FIRM-ABBR], low-FP class) ===
-  # Added s55 POPULATION v2 batch 2 per W3 architectural decision
-  # documented in the operator's private overlay slice. High-FP-private
-  # provider names are intentionally NOT in this list to avoid publishing
-  # those relationships through this pattern file. W2 (per-operator
-  # private DENY layer) deferred to a future vc-roe session.
-  '[external-svc-A]'
-  '[external-svc-B]'
-  '[external-svc-C]'
-  '[external-svc-D]'
-  '[external-svc-E]'
 )
 
 # Soft-warn: PROBABLY a leak but may be legitimate. Reviewer decides
 # per-hit. --strict mode treats these as deny.
 WARN_PATTERNS=(
-  # Internal decision-ID prefixes — legitimate as documentation but
+  # Internal decision-ID prefixes - legitimate as documentation but
   # reveal private-project tracking provenance.
   'D-MET-[0-9]+'
   'OBS-MET-[A-Z]+'
@@ -89,11 +48,11 @@ WARN_PATTERNS=(
   'D-VCS-[A-Z0-9-]+'
   'F-VCS-[A-Z0-9-]+'
 
-  # Specific compliance frameworks named in operator's day-job context
-  # — regulator names are public, specific firm-implementation paths
-  # might not be.
+  # Methodology-cycle markers and supervised-authority abbreviations.
+  # Regulator names are public; specific firm-implementation paths might
+  # not be, hence the soft-warn flag for eyeball-then-continue review.
   'Tiered Methodology Consolidation'
-  'HCMC'                             # supervised authority; legitimate to mention; flag for eyeball
+  'HCMC'
 )
 
 # Public author email expected on every public-repo commit. The pre-push
@@ -102,5 +61,19 @@ PUBLIC_AUTHOR_EMAIL='stratosjl@gmail.com'
 
 # Files / paths that we never scan: binary, generated, license texts,
 # the audit infrastructure itself (which contains the deny patterns and
-# would self-match).
-SCAN_EXCLUDE='(__pycache__|\.git|\.gitignore|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh)'
+# would self-match), and the local overlay (which contains operator-
+# flavored DENY entries by design).
+SCAN_EXCLUDE='(__pycache__|\.git|\.gitignore|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh|bin/audit-patterns\.local\.sh|bin/audit-patterns\.local\.sh\.example)'
+
+# Source the operator-local private overlay if present. The overlay
+# appends operator-flavored patterns to DENY_PATTERNS via array-append.
+# The overlay file is gitignored (matches the existing *.local.* rule in
+# .gitignore); absence is normal for fresh public clones and unprivileged
+# CI environments.
+_AUDIT_PATTERNS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_AUDIT_PATTERNS_LOCAL="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
+if [ -r "$_AUDIT_PATTERNS_LOCAL" ]; then
+  # shellcheck disable=SC1090
+  . "$_AUDIT_PATTERNS_LOCAL"
+fi
+unset _AUDIT_PATTERNS_DIR _AUDIT_PATTERNS_LOCAL

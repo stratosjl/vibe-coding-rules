@@ -117,6 +117,21 @@ fi
 PUBLIC_HEAD_SHA=$( ( cd "$TMPDIR/repo" && git rev-parse HEAD ) 2>/dev/null || echo 'unknown' )
 PUBLIC_HEAD_SHA=$(printf '%s' "$PUBLIC_HEAD_SHA" | tr -d '\n')
 
+# Copy operator's local overlay (if present) into the cloned tempdir so
+# the inner audit applies operator-flavored DENY patterns against the
+# published state. The overlay file itself is gitignored (never
+# published) but the pattern coverage is what the post-publish audit
+# needs. When run from a fresh public clone with no local overlay, this
+# is a no-op and the inner audit applies only the public scaffold's
+# generic patterns (introduced at v1.6.0 with the W2 split).
+LOCAL_OVERLAY="$REPO_ROOT/bin/audit-patterns.local.sh"
+if [ -r "$LOCAL_OVERLAY" ]; then
+  cp -f "$LOCAL_OVERLAY" "$TMPDIR/repo/bin/audit-patterns.local.sh"
+  hdr "operator-local overlay copied into temp clone (full DENY coverage active)"
+else
+  hdr "no operator-local overlay present; running with public scaffold patterns only"
+fi
+
 # The cloned tree's bin/publish-audit.sh is what we run, so the audit
 # uses the public repo's own pattern list at HEAD. We deliberately do
 # NOT run the local-tree publish-audit.sh against the cloned tree —
