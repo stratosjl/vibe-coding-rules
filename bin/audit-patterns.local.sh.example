@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# audit-patterns.local.sh.example - TEMPLATE for the operator-private
+# DENY overlay sourced by bin/audit-patterns.sh.
+#
+# Usage:
+#   1. Copy this file to bin/audit-patterns.local.sh.
+#   2. Edit the copy to list every operator-private string you want
+#      the pre-push audit to block. One regex per line, single-quoted.
+#      Use extended-grep regex syntax (\b, character classes, etc.).
+#   3. DO NOT COMMIT the copy. The path bin/audit-patterns.local.sh
+#      is gitignored via the *.local.* rule in .gitignore.
+#
+# The overlay APPENDS to the DENY_PATTERNS array defined in
+# bin/audit-patterns.sh. The public scaffold's generic patterns
+# (.internal, .lan) remain active alongside the operator-specific ones.
+#
+# Architectural intent: anything that would identify the operator, the
+# operator's employer, the operator's clients, the operator's internal
+# project codenames, the operator's filesystem paths, or any external
+# service provider relationship belongs HERE, NOT in the public
+# audit-patterns.sh.
+
+DENY_PATTERNS+=(
+  # === Firm name in every observed form ===
+  # 'your-firm-email-domain'
+  # 'your\.surname@your-firm-domain'
+  # 'Your Firm Name'
+  # 'Your-Firm-Name'
+  # '\bYFN\b'
+
+  # === Operator display name + variants ===
+  # 'YourFullName'
+  # '\bYOURSURNAME\b'
+  # 'y\.yoursurname\b'
+
+  # === Internal R&D project codenames ===
+  # 'codename-one'
+  # 'CODENAME-TWO'
+
+  # === Personal / private project folder paths ===
+  # 'OWN/PROJECT-NAME'
+
+  # === Client / counterparty identifiers ===
+  # 'CLIENT-ACRONYM'
+  # 'Client-Full-Name'
+
+  # === Operator-private filesystem path roots ===
+  # '/home/operator-user/somewhere'
+  # 'CloudSync/operator-doc-root'
+
+  # === External service provider names (high-FP class) ===
+  # 'Your Bank Name'
+  # 'Your Brokerage'
+)

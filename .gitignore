@@ -20,6 +20,7 @@ Thumbs.db
 # Secrets / local-only addon overrides
 # (the private operator-side addon never sits inside this repo)
 *.local.*
+!bin/audit-patterns.local.sh.example
 .env
 .env.*
 private/
