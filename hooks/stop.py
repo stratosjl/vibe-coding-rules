@@ -56,7 +56,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.9.1"
+ROUTINE_VERSION = "1.10.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -69,7 +69,15 @@ UPS_MARKER_PREFIX = "claude-methodology-current-session-"
 # correctly refused. SessionEnd deletes the claim cleanly; TTL reaps
 # orphans. Refresh fires unconditionally so claim hygiene is independent
 # of the heartbeat / silent-stop logic that may early-return.
+# v1.10.0 (F-63-01 Layer 2): if our refreshed claim is mode=writer and the
+# writer_last_mutation_ts is older than writer_idle_demote_seconds, demote
+# writer→reader (clear writer fields, keep top-level liveness fields). The
+# writer-lease ledger gets one row recording the idle-demote.
 CLAIM_FILENAME = "chat-claim.json"
+WRITER_LEASE_FILENAME = "writer-lease.jsonl"
+MODE_READER = "reader"
+MODE_WRITER = "writer"
+DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 
 SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+\d+m\]")
 
@@ -94,7 +102,19 @@ def claim_path_for(cwd_raw: Optional[str]) -> Optional[Path]:
 
 
 def refresh_claim(session_id: str, cwd_raw: Optional[str], now: int) -> str:
-    """Refresh own claim's ts. Returns 'refreshed' / 'not-owner' / 'no-claim' / 'error' / 'no-cwd' / 'no-session-id'."""
+    """Refresh own claim's ts. Returns one of:
+        'refreshed'             ts updated, mode unchanged.
+        'refreshed-demoted'     v1.10.0: writer→reader demote on idle.
+        'not-owner'             claim session_id != ours.
+        'no-claim' / 'error' / 'no-cwd' / 'no-session-id'  see below.
+
+    v1.10.0 (F-63-01 Layer 2): when our claim is mode=writer, check whether
+    writer_last_mutation_ts is older than writer_idle_demote_seconds. If
+    yes, demote: clear writer_session_id / writer_acquired_ts /
+    writer_last_mutation_ts, set mode=reader. Append a "idle-demote" row
+    to writer-lease.jsonl as audit-trail evidence. Top-level liveness
+    fields (pid/pid_starttime/boot_id/host) are preserved unchanged.
+    """
     if not session_id:
         return "no-session-id"
     path = claim_path_for(cwd_raw)
@@ -109,12 +129,45 @@ def refresh_claim(session_id: str, cwd_raw: Optional[str], now: int) -> str:
         return "error"
     if not isinstance(claim, dict) or claim.get("session_id") != session_id:
         return "not-owner"
+
+    demoted = False
+    if (str(claim.get("mode", "")) == MODE_WRITER
+            and claim.get("writer_session_id") == session_id):
+        try:
+            last_mut = int(claim.get("writer_last_mutation_ts") or 0)
+            idle_n = int(claim.get("writer_idle_demote_seconds")
+                         or DEFAULT_WRITER_IDLE_DEMOTE_SECONDS)
+        except (TypeError, ValueError):
+            last_mut = 0
+            idle_n = DEFAULT_WRITER_IDLE_DEMOTE_SECONDS
+        if last_mut > 0 and (now - last_mut) >= idle_n:
+            claim["mode"] = MODE_READER
+            claim["writer_session_id"] = None
+            claim["writer_acquired_ts"] = None
+            claim["writer_last_mutation_ts"] = None
+            demoted = True
+            lease_path = path.parent / WRITER_LEASE_FILENAME
+            try:
+                lease_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(lease_path, "a", encoding="utf-8") as lf:
+                    lf.write(json.dumps({
+                        "ts": now,
+                        "session_id": session_id,
+                        "action": "idle-demote",
+                        "reason": "writer-idle-demote-threshold",
+                        "idle_seconds_observed": now - last_mut,
+                        "idle_seconds_threshold": idle_n,
+                        "routine_version": ROUTINE_VERSION,
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+
     claim["ts"] = now
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(claim, f)
             f.write("\n")
-        return "refreshed"
+        return "refreshed-demoted" if demoted else "refreshed"
     except Exception:
         return "error"
 

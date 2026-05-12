@@ -27,6 +27,14 @@ bash bin/publish-audit-combined.sh           # quiet, hook-mode
 bash bin/publish-audit-combined.sh --verbose # full per-tool output
 ```
 
+### Operator-local post-* hook fire-through (since v1.9.1)
+
+`bin/install-hooks.sh` also activates three thin forwarder dispatchers under `.githooks/`: `post-commit`, `post-merge`, `post-checkout`. Each dispatcher resolves the repo root via `git rev-parse --show-toplevel` and `exec`s the operator-local hook at `.git/hooks/post-<event>` when that file exists and is executable; otherwise it silent-no-ops. Positional arguments (`post-checkout`'s `prev_head new_head branch_flag` triple, `post-merge`'s `is_squash_merge` flag) are passed through to the operator-local hook untouched; exit code propagates natively.
+
+This dispatcher chain is the standard pattern for keeping the version-controlled pre-push gate at `.githooks/pre-push` while preserving any operator-local post-event automation (sync hooks, notification scripts, custom logging) that the contributor installs into `.git/hooks/post-*` per clone. There is no need to re-install operator-local post-* hooks after running `bin/install-hooks.sh`; the dispatchers forward to whatever already exists there.
+
+If you do not have operator-local post-* hooks, the dispatchers are inert and require no additional configuration.
+
 ## Follow the lockstep version-bump rule
 
 Whenever you change anything in:

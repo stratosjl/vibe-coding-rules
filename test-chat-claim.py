@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Chat-claim regression tests for vc-roe v1.9.0.
+"""Chat-claim regression tests for vc-roe v1.10.0.
 
 Covers the multi-chat-access protection introduced at v1.3.0 per
 OBS-vcroe-multi-chat-contamination-01, plus v1.9.0 (F-63-01) Layer 1
-liveness probe and Layer 4 worktree-aware bypass:
+liveness probe and Layer 4 worktree-aware bypass, plus v1.10.0
+(F-63-01) Layer 2 reader/writer split with audit-trail-pinned writer-
+lease:
 
 - SessionStart acquires the claim or refuses on conflict
 - Stop hook refreshes the claim ts (per-turn heartbeat)
@@ -12,6 +14,12 @@ liveness probe and Layer 4 worktree-aware bypass:
 - v1.9.0 Layer 1: dead-PID, boot-ID-mismatch take-orphan paths;
   legacy v1.3.0 claim shapes fall through to TTL-only behaviour
 - v1.9.0 Layer 4: cwd inside a git worktree bypasses claim entirely
+- v1.10.0 Layer 2: SessionStart writes mode=reader; alive-reader
+  coexist (no refuse); PostToolUse promotes to mode=writer on
+  watched-path edit or git-mutation Bash; refresh on second write;
+  conflict-banner on concurrent alive writer; Stop idle-demotes
+  writer→reader after writer_idle_demote_seconds; writer-lease.jsonl
+  ledger captures every promotion / refresh / conflict / idle-demote.
 
 Each test isolates filesystem state by setting HOME to a tempdir, so
 ~/.claude/projects/... cannot pollute the real operator home dir. The
@@ -43,8 +51,10 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 SESSION_START = PLUGIN_ROOT / "hooks" / "session-start.py"
 STOP_HOOK = PLUGIN_ROOT / "hooks" / "stop.py"
 SESSION_END = PLUGIN_ROOT / "hooks" / "session-end.py"
+POST_TOOL_USE = PLUGIN_ROOT / "hooks" / "post-tool-use.py"
 
 CLAIM_FILENAME = "chat-claim.json"
+WRITER_LEASE_FILENAME = "writer-lease.jsonl"
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 
@@ -489,6 +499,349 @@ def case_worktree_bypass_no_claim_written(home: Path, tmp: Path) -> None:
     check("no refusal banner emitted", "CHAT-CLAIM CONFLICT" not in out)
 
 
+# ---------------------------------------------------------------------------
+# v1.10.0 (F-63-01 Layer 2) test cases — reader/writer split
+# ---------------------------------------------------------------------------
+
+
+def lease_path(home: Path, cwd: Path) -> Path:
+    return home / ".claude" / "projects" / cwd_dashed(cwd) / WRITER_LEASE_FILENAME
+
+
+def write_claim_v10_reader(path: Path, session_id: str, ts: int, host: str,
+                           pid: int, pid_starttime: Optional[str],
+                           boot_id: str) -> None:
+    """v1.10.0-shape reader claim. Writer fields null."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "session_id": session_id,
+        "ts": ts,
+        "host": host,
+        "pid": pid,
+        "pid_starttime": pid_starttime,
+        "boot_id": boot_id,
+        "mode": "reader",
+        "writer_session_id": None,
+        "writer_acquired_ts": None,
+        "writer_last_mutation_ts": None,
+        "writer_idle_demote_seconds": 1800,
+    }
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def write_claim_v10_writer(path: Path, session_id: str, ts: int, host: str,
+                           pid: int, pid_starttime: Optional[str],
+                           boot_id: str, writer_acquired_ts: int,
+                           writer_last_mutation_ts: int,
+                           writer_idle_demote_seconds: int = 1800,
+                           writer_session_id: Optional[str] = None) -> None:
+    """v1.10.0-shape writer claim. By default writer_session_id == session_id."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "session_id": session_id,
+        "ts": ts,
+        "host": host,
+        "pid": pid,
+        "pid_starttime": pid_starttime,
+        "boot_id": boot_id,
+        "mode": "writer",
+        "writer_session_id": writer_session_id or session_id,
+        "writer_acquired_ts": writer_acquired_ts,
+        "writer_last_mutation_ts": writer_last_mutation_ts,
+        "writer_idle_demote_seconds": writer_idle_demote_seconds,
+    }
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def read_lease_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            pass
+    return rows
+
+
+def case_session_start_writes_reader_mode(home: Path, tmp: Path) -> None:
+    print("\n[case] SessionStart writes mode=reader on fresh project (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-fresh-reader")
+    sid = str(uuid.uuid4())
+    rc, out, err = run_hook(SESSION_START, {"session_id": sid, "cwd": str(cwd),
+                                            "source": "startup"}, home)
+    check("rc == 0", rc == 0, err[:200])
+    cp = claim_path(home, cwd)
+    claim = read_claim(cp)
+    check("claim file exists", claim is not None)
+    if claim:
+        check("mode is reader", claim.get("mode") == "reader",
+              f"mode={claim.get('mode')}")
+        check("writer_session_id is null", claim.get("writer_session_id") is None)
+        check("writer_idle_demote_seconds default present",
+              isinstance(claim.get("writer_idle_demote_seconds"), int))
+
+
+def case_reader_coexist_no_overwrite(home: Path, tmp: Path) -> None:
+    print("\n[case] alive other-reader -> coexist (no overwrite, no refusal) (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-reader-coexist")
+    other_sid = str(uuid.uuid4())
+    me_sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Existing reader claim, alive (uses this process pid+starttime to pass
+    # liveness probe).
+    my_st = read_my_starttime()
+    if my_st is None and sys.platform.startswith("linux"):
+        check("read_my_starttime on Linux", False, "harness regression")
+        return
+    write_claim_v10_reader(cp, other_sid, ts=int(time.time()) - 60,
+                           host=my_hostname(), pid=os.getpid(),
+                           pid_starttime=my_st, boot_id=read_my_boot_id())
+    rc, out, err = run_hook(SESSION_START, {"session_id": me_sid, "cwd": str(cwd),
+                                            "source": "startup"}, home)
+    check("rc == 0", rc == 0, err[:200])
+    check("no refusal banner (reader-coexist path)",
+          "CHAT-CLAIM CONFLICT" not in out, f"out-head={out[:400]}")
+    check("trace shows reader-coexist",
+          "reader-coexist" in out, f"out-tail={out[-400:]}")
+    claim = read_claim(cp)
+    check("existing reader claim untouched",
+          claim is not None and claim.get("session_id") == other_sid,
+          f"claim={claim}")
+
+
+def case_writer_promote_on_watched_path_edit(home: Path, tmp: Path) -> None:
+    print("\n[case] PostToolUse Edit on watched path -> promote reader->writer (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-writer-promote-edit")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Set up a reader claim.
+    write_claim_v10_reader(cp, sid, ts=int(time.time()),
+                           host=my_hostname(), pid=os.getpid(),
+                           pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id())
+    # Simulate an Edit on a watched path.
+    watched_file = cwd / "hooks" / "post-tool-use.py"
+    watched_file.parent.mkdir(parents=True, exist_ok=True)
+    watched_file.write_text("# stub\n", encoding="utf-8")
+    rc, out, err = run_hook(POST_TOOL_USE, {
+        "session_id": sid,
+        "cwd": str(cwd),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(watched_file)},
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("claim mode promoted to writer",
+          claim is not None and claim.get("mode") == "writer",
+          f"mode={claim.get('mode') if claim else 'no-claim'}")
+    if claim:
+        check("writer_session_id == session_id",
+              claim.get("writer_session_id") == sid)
+        check("writer_acquired_ts set",
+              isinstance(claim.get("writer_acquired_ts"), int)
+              and claim["writer_acquired_ts"] > 0)
+        check("writer_last_mutation_ts set",
+              isinstance(claim.get("writer_last_mutation_ts"), int))
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger has one promote row",
+          any(r.get("action") == "promote" for r in rows),
+          f"rows={rows}")
+
+
+def case_writer_promote_on_git_mutation_bash(home: Path, tmp: Path) -> None:
+    print("\n[case] PostToolUse Bash git-mutation -> promote reader->writer (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-writer-promote-git")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    write_claim_v10_reader(cp, sid, ts=int(time.time()),
+                           host=my_hostname(), pid=os.getpid(),
+                           pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id())
+    rc, out, err = run_hook(POST_TOOL_USE, {
+        "session_id": sid,
+        "cwd": str(cwd),
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'test ship'",
+                       "description": "Sign and commit"},
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("claim promoted to writer on git commit",
+          claim is not None and claim.get("mode") == "writer")
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger row records git-mutation kind",
+          any(r.get("target_kind") == "git-mutation" for r in rows),
+          f"rows={rows}")
+
+
+def case_writer_refresh_on_second_write(home: Path, tmp: Path) -> None:
+    print("\n[case] PostToolUse second write -> refresh writer_last_mutation_ts (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-writer-refresh")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Existing writer claim owned by us, with old last-mutation ts.
+    old_ts = int(time.time()) - 300  # 5 min ago
+    write_claim_v10_writer(cp, sid, ts=old_ts, host=my_hostname(),
+                           pid=os.getpid(), pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id(),
+                           writer_acquired_ts=old_ts,
+                           writer_last_mutation_ts=old_ts)
+    # Second write.
+    watched = cwd / "bin" / "publish-audit.sh"
+    watched.parent.mkdir(parents=True, exist_ok=True)
+    watched.write_text("#!/bin/bash\n", encoding="utf-8")
+    rc, out, err = run_hook(POST_TOOL_USE, {
+        "session_id": sid,
+        "cwd": str(cwd),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(watched)},
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("claim still writer", claim is not None and claim.get("mode") == "writer")
+    if claim:
+        check("writer_last_mutation_ts refreshed",
+              int(claim.get("writer_last_mutation_ts", 0)) > old_ts,
+              f"old={old_ts} new={claim.get('writer_last_mutation_ts')}")
+        check("writer_acquired_ts preserved (not bumped)",
+              int(claim.get("writer_acquired_ts", 0)) == old_ts,
+              f"acquired={claim.get('writer_acquired_ts')}")
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger has a refresh row",
+          any(r.get("action") == "refresh" for r in rows),
+          f"rows={rows}")
+
+
+def case_writer_conflict_on_concurrent_alive_writer(home: Path, tmp: Path) -> None:
+    print("\n[case] PostToolUse write on another-alive-writer's claim -> conflict banner (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-writer-conflict")
+    other_sid = str(uuid.uuid4())
+    me_sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Existing writer claim owned by another session, alive (this process's
+    # pid+starttime so the liveness probe sees it as alive).
+    now = int(time.time())
+    write_claim_v10_writer(cp, other_sid, ts=now, host=my_hostname(),
+                           pid=os.getpid(), pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id(),
+                           writer_acquired_ts=now,
+                           writer_last_mutation_ts=now,
+                           writer_session_id=other_sid)
+    watched = cwd / "CHANGELOG.md"
+    watched.write_text("# stub\n", encoding="utf-8")
+    rc, out, err = run_hook(POST_TOOL_USE, {
+        "session_id": me_sid,
+        "cwd": str(cwd),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(watched)},
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    check("writer-conflict banner emitted",
+          "CHAT-CLAIM WRITER CONFLICT" in out, f"out-head={out[:600]}")
+    claim = read_claim(cp)
+    check("existing writer claim NOT overwritten",
+          claim is not None and claim.get("writer_session_id") == other_sid,
+          f"claim={claim}")
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger has a conflict row",
+          any(r.get("action") == "conflict" for r in rows),
+          f"rows={rows}")
+
+
+def case_legacy_claim_no_mode_field_skip(home: Path, tmp: Path) -> None:
+    print("\n[case] PostToolUse on legacy v1.3.0..v1.9.x claim (no mode) -> legacy-skip (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-legacy-skip")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Legacy v1.3.0 shape: no mode field.
+    write_claim(cp, sid, ts=int(time.time()), host=my_hostname())
+    watched = cwd / "hooks" / "stop.py"
+    watched.parent.mkdir(parents=True, exist_ok=True)
+    watched.write_text("# stub\n", encoding="utf-8")
+    rc, out, err = run_hook(POST_TOOL_USE, {
+        "session_id": sid,
+        "cwd": str(cwd),
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(watched)},
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("legacy claim untouched (no mode field added)",
+          claim is not None and "mode" not in claim,
+          f"claim={claim}")
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger has a legacy-skip row",
+          any(r.get("action") == "legacy-skip" for r in rows),
+          f"rows={rows}")
+
+
+def case_stop_idle_demote_writer_to_reader(home: Path, tmp: Path) -> None:
+    print("\n[case] Stop hook demotes writer->reader after idle threshold (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-idle-demote")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Writer claim with last-mutation 35 min ago (> 1800 sec default threshold).
+    now = int(time.time())
+    old_mut = now - 35 * 60
+    write_claim_v10_writer(cp, sid, ts=old_mut, host=my_hostname(),
+                           pid=os.getpid(), pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id(),
+                           writer_acquired_ts=old_mut,
+                           writer_last_mutation_ts=old_mut,
+                           writer_idle_demote_seconds=1800)
+    transcript = tmp / "stop-demote-transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    rc, out, err = run_hook(STOP_HOOK, {
+        "session_id": sid, "cwd": str(cwd),
+        "transcript_path": str(transcript),
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("claim mode demoted to reader",
+          claim is not None and claim.get("mode") == "reader",
+          f"mode={claim.get('mode') if claim else 'no-claim'}")
+    if claim:
+        check("writer_session_id cleared", claim.get("writer_session_id") is None)
+        check("writer_acquired_ts cleared", claim.get("writer_acquired_ts") is None)
+        check("writer_last_mutation_ts cleared",
+              claim.get("writer_last_mutation_ts") is None)
+    rows = read_lease_rows(lease_path(home, cwd))
+    check("ledger has an idle-demote row",
+          any(r.get("action") == "idle-demote" for r in rows),
+          f"rows={rows}")
+
+
+def case_writer_no_demote_within_idle_threshold(home: Path, tmp: Path) -> None:
+    print("\n[case] Stop hook does NOT demote writer within idle threshold (Layer 2)")
+    cwd = make_test_cwd(tmp, "proj-l2-no-demote")
+    sid = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+    # Writer claim with last-mutation 5 min ago (< 1800 sec threshold).
+    now = int(time.time())
+    recent_mut = now - 5 * 60
+    write_claim_v10_writer(cp, sid, ts=recent_mut, host=my_hostname(),
+                           pid=os.getpid(), pid_starttime=read_my_starttime(),
+                           boot_id=read_my_boot_id(),
+                           writer_acquired_ts=recent_mut,
+                           writer_last_mutation_ts=recent_mut,
+                           writer_idle_demote_seconds=1800)
+    transcript = tmp / "stop-keep-writer-transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    rc, out, err = run_hook(STOP_HOOK, {
+        "session_id": sid, "cwd": str(cwd),
+        "transcript_path": str(transcript),
+    }, home)
+    check("rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("claim still writer",
+          claim is not None and claim.get("mode") == "writer")
+
+
 def case_pid_remote_host_falls_through(home: Path, tmp: Path) -> None:
     print("\n[case] dead PID but on remote host -> cannot probe, fall through to TTL")
     cwd = make_test_cwd(tmp, "proj-remote-host")
@@ -516,7 +869,7 @@ def case_pid_remote_host_falls_through(home: Path, tmp: Path) -> None:
 
 
 def main() -> int:
-    print("vc-roe chat-claim regression suite (v1.9.0)")
+    print("vc-roe chat-claim regression suite (v1.10.0)")
     home = Path(tempfile.mkdtemp(prefix="vcroe-test-home-"))
     tmp = Path(tempfile.mkdtemp(prefix="vcroe-test-cwd-"))
     try:
@@ -539,6 +892,16 @@ def main() -> int:
         case_legacy_claim_no_pid_falls_through_to_ttl(home, tmp)
         case_worktree_bypass_no_claim_written(home, tmp)
         case_pid_remote_host_falls_through(home, tmp)
+        # v1.10.0 (F-63-01) Layer 2 cases
+        case_session_start_writes_reader_mode(home, tmp)
+        case_reader_coexist_no_overwrite(home, tmp)
+        case_writer_promote_on_watched_path_edit(home, tmp)
+        case_writer_promote_on_git_mutation_bash(home, tmp)
+        case_writer_refresh_on_second_write(home, tmp)
+        case_writer_conflict_on_concurrent_alive_writer(home, tmp)
+        case_legacy_claim_no_mode_field_skip(home, tmp)
+        case_stop_idle_demote_writer_to_reader(home, tmp)
+        case_writer_no_demote_within_idle_threshold(home, tmp)
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)

@@ -35,9 +35,17 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.9.1"
+ROUTINE_VERSION = "1.10.0"
 CLAIM_FILENAME = "chat-claim.json"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
+
+# v1.10.0 (F-63-01 Layer 2): SessionEnd semantics unchanged — release_claim
+# already deletes the file regardless of mode, which correctly clears both
+# reader and writer state in one operation. Implicit-readers (sessions that
+# coexisted without writing the file per the reader-coexist branch) have no
+# on-disk presence; their SessionEnd no-ops cleanly via the "not-owner"
+# path. The writer-lease ledger (writer-lease.jsonl) is append-only and
+# survives SessionEnd; T4-close summarises it into audit-trail markdown.
 
 
 def append_log(entry: dict[str, Any]) -> None:
