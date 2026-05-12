@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# vc-roe post-commit dispatcher (v1.9.1, F-66-01).
+#
+# v1.8.0 set `core.hooksPath=.githooks` per-clone so the cross-machine
+# pre-push hook would resolve consistently. That redirect is complete: it
+# also bypasses the per-clone `.git/hooks/` directory for every other
+# event. On machines where the operator has installed local post-* hooks
+# (e.g. the working tree mirror-sync to ***REMOVED***), those went silently
+# inert from v1.8.0 onward (OBS-vcroe-post-commit-sync-log-gap-01).
+#
+# This dispatcher forwards to the operator-local `.git/hooks/post-commit`
+# if it exists and is executable, restoring fire-through without giving
+# up the cross-machine pre-push design. On clones without an operator-
+# local hook (other machines, fresh clones, CI), the dispatcher exits 0.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+LOCAL="$REPO_ROOT/.git/hooks/post-commit"
+
+if [ -x "$LOCAL" ]; then
+  exec "$LOCAL" "$@"
+fi
+
+exit 0

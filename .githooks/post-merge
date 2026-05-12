@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# vc-roe post-merge dispatcher (v1.9.1, F-66-01).
+#
+# See .githooks/post-commit for the design rationale. Same pattern:
+# forward to operator-local `.git/hooks/post-merge` if present, else
+# silent no-op. Git invokes post-merge with a single positional arg
+# ($1 = is_squash_merge flag); `"$@"` passes it through untouched.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+LOCAL="$REPO_ROOT/.git/hooks/post-merge"
+
+if [ -x "$LOCAL" ]; then
+  exec "$LOCAL" "$@"
+fi
+
+exit 0
