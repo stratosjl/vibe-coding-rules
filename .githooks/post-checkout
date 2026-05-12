@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# vc-roe post-checkout dispatcher (v1.9.1, F-66-01).
+#
+# See .githooks/post-commit for the design rationale. Same pattern:
+# forward to operator-local `.git/hooks/post-checkout` if present, else
+# silent no-op. Git invokes post-checkout with three positional args
+# ($1 = prev_head, $2 = new_head, $3 = branch_flag); `"$@"` passes them
+# through untouched so the operator-local hook's file-vs-branch checkout
+# detection works correctly.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+LOCAL="$REPO_ROOT/.git/hooks/post-checkout"
+
+if [ -x "$LOCAL" ]; then
+  exec "$LOCAL" "$@"
+fi
+
+exit 0

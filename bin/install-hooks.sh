@@ -40,6 +40,21 @@ if [ ! -x "$PREPUSH" ]; then
   chmod +x "$PREPUSH"
 fi
 
+# v1.9.1 (F-66-01): the three post-* dispatchers must also be executable.
+# They forward to operator-local .git/hooks/post-<event> if present; without
+# core.hooksPath redirect they would be inert per v1.8.0+v1.8.1 behaviour.
+for HOOK in post-commit post-merge post-checkout; do
+  DISPATCH="$HOOKS_DIR/$HOOK"
+  if [ ! -r "$DISPATCH" ]; then
+    echo "install-hooks: $REPO_ROOT/$DISPATCH not found; this clone may be incomplete." >&2
+    exit 1
+  fi
+  if [ ! -x "$DISPATCH" ]; then
+    echo "install-hooks: making $DISPATCH executable..."
+    chmod +x "$DISPATCH"
+  fi
+done
+
 CURRENT=$(git config --local --get core.hooksPath 2>/dev/null || echo '')
 if [ "$CURRENT" = "$HOOKS_DIR" ]; then
   echo "install-hooks: core.hooksPath already set to $HOOKS_DIR (no change)."
@@ -64,3 +79,5 @@ fi
 echo ""
 echo "install-hooks: done. Every 'git push' from this clone will now run"
 echo "  bin/publish-audit-combined.sh and block on any FAIL."
+echo "  post-commit / post-merge / post-checkout dispatchers will forward to"
+echo "  operator-local .git/hooks/post-<event> if present (no-op otherwise)."
