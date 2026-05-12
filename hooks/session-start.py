@@ -51,6 +51,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -72,7 +73,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.8.1"
+ROUTINE_VERSION = "1.9.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
@@ -81,9 +82,16 @@ TIER_FLOOR_PREVIOUS_FILENAME = "methodology-tier-floor.previous"
 # v1.3.0: chat-claim primitive (multi-chat-access protection per
 # OBS-vcroe-multi-chat-contamination-01). SessionStart acquires; Stop
 # refreshes ts per turn; SessionEnd releases; TTL reaps orphans.
+# v1.9.0 (F-63-01 Layer 1): adds pid + pid_starttime + boot_id fields for
+# liveness-probe-before-refuse. Auto-release on dead-PID, recycled-PID, or
+# host-reboot, so a killed chat no longer parks the claim for the full TTL.
+# v1.9.0 (F-63-01 Layer 4): adds worktree-aware bypass — claim skipped
+# entirely when CWD sits inside a `git worktree` (operator escape valve
+# for parallel work).
 CLAIM_FILENAME = "chat-claim.json"
 CLAIM_TTL_ENV_VAR = "VC_ROE_CLAIM_TTL_HOURS"
 DEFAULT_CLAIM_TTL_HOURS = 8.0
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 # v1.4.0: publish-state broadcast (OBS-vcroe-coordination-cron-broadcast-01
 # closure). A user crontab is expected to run `bash bin/publish-audit-state.sh
@@ -462,11 +470,26 @@ def read_claim(cwd: Path) -> Optional[dict[str, Any]]:
         return None
 
 
-def write_claim(cwd: Path, session_id: str, ts: int, host: str) -> bool:
+def write_claim(cwd: Path, session_id: str, ts: int, host: str,
+                pid: int, pid_starttime: Optional[str], boot_id: str) -> bool:
+    """Write the chat-claim JSON.
+
+    v1.9.0: schema gains pid + pid_starttime + boot_id for the liveness probe.
+    pid_starttime may be None on platforms where it can't be read (macOS);
+    in that case the field is stored as null and evaluate_claim falls back to
+    the simpler is_pid_alive probe.
+    """
     path = claim_path(cwd)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"session_id": session_id, "ts": ts, "host": host}
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "ts": ts,
+            "host": host,
+            "pid": pid,
+            "pid_starttime": pid_starttime,
+            "boot_id": boot_id,
+        }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
             f.write("\n")
@@ -475,16 +498,172 @@ def write_claim(cwd: Path, session_id: str, ts: int, host: str) -> bool:
         return False
 
 
+def read_boot_id() -> str:
+    """v1.9.0: stable per-boot identifier for the host.
+
+    Linux: contents of /proc/sys/kernel/random/boot_id (UUID, stable for the
+    lifetime of the kernel boot).
+    macOS / Windows / read-error: empty string. Caller treats "" as "no
+    boot_id comparison possible" and falls back to the pid-starttime path
+    or to TTL-only evaluation.
+    """
+    try:
+        if BOOT_ID_PATH.is_file():
+            return BOOT_ID_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def read_pid_starttime(pid: int) -> Optional[str]:
+    """v1.9.0: per-process creation marker. Combined with pid, uniquely
+    identifies a specific process across PID recycling and reboots.
+
+    Linux: /proc/<pid>/stat field 22 (starttime in clock ticks since boot).
+    Windows: GetProcessTimes() creation FILETIME via ctypes (64-bit).
+    macOS / other / probe-error: None — caller falls back to is_pid_alive.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            stat_path = Path(f"/proc/{pid}/stat")
+            if not stat_path.is_file():
+                return None
+            content = stat_path.read_text(encoding="utf-8", errors="replace")
+            close = content.rfind(")")
+            if close < 0:
+                return None
+            fields = content[close + 1:].split()
+            if len(fields) < 20:
+                return None
+            return fields[19]
+        except Exception:
+            return None
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return None
+            try:
+                creation = wintypes.FILETIME()
+                exit_t = wintypes.FILETIME()
+                kernel_t = wintypes.FILETIME()
+                user_t = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    h,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_t),
+                    ctypes.byref(kernel_t),
+                    ctypes.byref(user_t),
+                )
+                if not ok:
+                    return None
+                ft = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+                return str(ft)
+            finally:
+                kernel32.CloseHandle(h)
+        except Exception:
+            return None
+    return None
+
+
+def is_pid_alive(pid: int) -> Optional[bool]:
+    """v1.9.0: True if PID currently exists on this host; False if dead;
+    None if probe is not possible (returned only on Windows probe errors).
+
+    POSIX (Linux, macOS): os.kill(pid, 0). EPERM means the PID exists but
+    we cannot signal it — treat as alive.
+    Windows: OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) + GetExitCodeProcess
+    via ctypes; ERROR_ACCESS_DENIED (5) on OpenProcess means PID exists but is
+    inaccessible (e.g. system process) — treat as alive.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                err = ctypes.get_last_error()
+                if err == 5:
+                    return True
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                ok = kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
+                if not ok:
+                    return None
+                return exit_code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(h)
+        except Exception:
+            return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return None
+
+
+def is_in_git_worktree(cwd: Path) -> bool:
+    """v1.9.0 (F-63-01 Layer 4): True if cwd sits inside a linked git
+    worktree, False otherwise.
+
+    Detection: `git rev-parse --git-common-dir` vs `--git-dir`. In a linked
+    worktree, --git-dir resolves to <main>/.git/worktrees/<name> while
+    --git-common-dir resolves to <main>/.git; they differ. In a main working
+    tree, in a submodule, or in a non-git directory, the two resolve equal
+    (or `git rev-parse` returns rc != 0); we return False.
+    """
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if common.returncode != 0:
+            return False
+        gitdir = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--git-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if gitdir.returncode != 0:
+            return False
+        try:
+            common_p = (cwd / common.stdout.strip()).resolve()
+            gitdir_p = (cwd / gitdir.stdout.strip()).resolve()
+        except Exception:
+            return False
+        return common_p != gitdir_p
+    except Exception:
+        return False
+
+
 def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
-                   now: int, ttl_hours: float) -> tuple[str, dict[str, Any]]:
+                   now: int, ttl_hours: float, our_host: str,
+                   our_boot_id: str) -> tuple[str, dict[str, Any]]:
     """Decide what to do with an existing chat-claim.
 
     Returns (action, info) where action is one of:
         "take-new"     no existing claim; acquire fresh.
         "resume"       claim's session_id matches current; refresh ts.
-        "take-orphan"  claim exists but TTL-expired or corrupt; take over.
+        "take-orphan"  claim exists but TTL-expired, corrupt, or liveness
+                       probe (v1.9.0) shows the owning process is dead /
+                       host rebooted / PID recycled; take over.
         "refuse"       claim exists, valid, owned by another live session;
                        refuse this session and surface conflict.
+
+    v1.9.0 (F-63-01 Layer 1): the liveness probe runs before the TTL check.
+    If host matches and the owning PID is known-dead, or boot_id mismatches
+    (host rebooted since the claim was written), we take-orphan immediately
+    rather than waiting out the full TTL.
     """
     if not claim or not isinstance(claim, dict):
         return ("take-new", {"reason": "no-existing-claim"})
@@ -507,6 +686,52 @@ def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
     if other_session == current_session:
         info["reason"] = "same-session-resume"
         return ("resume", info)
+
+    # v1.9.0 Layer 1: liveness probe before refuse. Two probe paths:
+    #
+    #   (a) boot_id mismatch: claim's host matches ours AND both sides have
+    #       a non-empty boot_id AND they differ -> host rebooted since the
+    #       claim was written -> owner cannot possibly be alive.
+    #
+    #   (b) pid liveness: claim's host matches ours AND claim has a pid.
+    #       If pid_starttime is present on both sides, compare directly
+    #       (catches PID recycling). Otherwise fall back to is_pid_alive.
+    #
+    # Either probe path returning a definitive dead-owner signal yields
+    # take-orphan. Indeterminate results (unknown host, missing fields,
+    # probe error) fall through to the existing TTL evaluation so legacy
+    # v1.3.0..v1.8.1 claims and cross-host claims keep their TTL semantics.
+    other_pid_raw = claim.get("pid", None)
+    other_pid_starttime = claim.get("pid_starttime", None)
+    other_boot_id = str(claim.get("boot_id", "") or "")
+    same_host = bool(other_host and other_host != "?" and other_host == our_host)
+
+    if same_host and our_boot_id and other_boot_id and our_boot_id != other_boot_id:
+        info["reason"] = "boot-id-mismatch"
+        return ("take-orphan", info)
+
+    if same_host and other_pid_raw is not None:
+        try:
+            other_pid = int(other_pid_raw)
+        except (TypeError, ValueError):
+            other_pid = None
+        if other_pid is not None and other_pid > 0:
+            if other_pid_starttime is not None:
+                current_starttime = read_pid_starttime(other_pid)
+                if current_starttime is None:
+                    info["reason"] = "pid-dead"
+                    return ("take-orphan", info)
+                if str(current_starttime) != str(other_pid_starttime):
+                    info["reason"] = "pid-recycled"
+                    return ("take-orphan", info)
+                # Same pid + same starttime: owner alive; fall through to TTL.
+            else:
+                alive = is_pid_alive(other_pid)
+                if alive is False:
+                    info["reason"] = "pid-dead"
+                    return ("take-orphan", info)
+                # alive is True or None (probe inconclusive): fall through.
+
     age_seconds = max(0, now - other_ts)
     ttl_seconds = int(ttl_hours * 3600)
     info["age_seconds"] = age_seconds
@@ -730,24 +955,41 @@ def main() -> int:
     # so the assistant halts mutations on the working tree. Stop refreshes
     # the claim ts (keeps it alive during active use); SessionEnd deletes
     # the claim (clean release on chat close); TTL reaps orphans.
+    #
+    # v1.9.0 (F-63-01): Layer 1 (liveness probe + boot_id) lets evaluate_claim
+    # auto-release on dead-PID, recycled-PID, or host-reboot, so a killed
+    # chat no longer parks the claim for the full TTL. Layer 4 short-circuits
+    # the whole acquire path when cwd is inside a git worktree — explicit
+    # parallel-work escape valve, composes with EnterWorktree agent isolation.
     session_id = str(event.get("session_id") or "")
     ttl_hours = claim_ttl_hours()
     claim_action = "no-session-id"
     claim_info: dict[str, Any] = {}
     claim_banner_text = ""
     if session_id:
-        try:
-            host = socket.gethostname()
-        except Exception:
-            host = "?"
-        existing_claim = read_claim(cwd)
-        claim_action, claim_info = evaluate_claim(
-            existing_claim, session_id, int(started), ttl_hours
-        )
-        if claim_action == "refuse":
-            claim_banner_text = claim_refuse_banner(claim_info, ttl_hours, cwd)
+        if is_in_git_worktree(cwd):
+            claim_action = "bypass-worktree"
+            claim_info = {"reason": "cwd-inside-git-worktree"}
         else:
-            write_claim(cwd, session_id, int(started), host)
+            try:
+                host = socket.gethostname()
+            except Exception:
+                host = "?"
+            our_boot_id = read_boot_id()
+            our_pid = os.getpid()
+            our_pid_starttime = read_pid_starttime(our_pid)
+            existing_claim = read_claim(cwd)
+            claim_action, claim_info = evaluate_claim(
+                existing_claim, session_id, int(started), ttl_hours,
+                host, our_boot_id,
+            )
+            if claim_action == "refuse":
+                claim_banner_text = claim_refuse_banner(claim_info, ttl_hours, cwd)
+            else:
+                write_claim(
+                    cwd, session_id, int(started), host,
+                    our_pid, our_pid_starttime, our_boot_id,
+                )
 
     sc_trace = f"({s}/{c})" if s and c else "(override)"
     # v1.4.0: publish-state broadcast read (OBS-vcroe-coordination-cron-broadcast-01).
