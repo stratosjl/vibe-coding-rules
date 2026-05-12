@@ -10,6 +10,23 @@ python3 test-detection.py
 
 The runner spins up synthetic project fixtures under a temp dir and exercises the SessionStart hook against each. Any failure means the detection logic regressed; fix or document before opening the PR.
 
+## Install the cross-machine pre-push hook (once per clone)
+
+vc-roe ships a version-controlled pre-push hook at `.githooks/pre-push` that runs `bin/publish-audit-combined.sh` and blocks any push that leaks operator-private content or credential patterns. The hook is activated per-clone by a one-time bootstrap:
+
+```bash
+bash bin/install-hooks.sh
+```
+
+The bootstrap sets `git config --local core.hooksPath .githooks`. It is idempotent — safe to re-run. After install, every `git push` from this clone runs the combined-audit harness (six tools: `publish-audit.sh`, `publish-audit-state.sh`, `gitleaks` HEAD + history, `test-audit-patterns.py`, inline credential heuristics) and blocks on any FAIL. WARN-only results (e.g., `gitleaks` not installed) do not block.
+
+Run the harness manually any time:
+
+```bash
+bash bin/publish-audit-combined.sh           # quiet, hook-mode
+bash bin/publish-audit-combined.sh --verbose # full per-tool output
+```
+
 ## Follow the lockstep version-bump rule
 
 Whenever you change anything in:
@@ -19,13 +36,18 @@ Whenever you change anything in:
 - `methodology-content/*.md`
 - `commands/*.md` (anything affecting slash-command behaviour)
 
-bump these three values in lockstep:
+bump these values in lockstep:
 
 1. `.claude-plugin/plugin.json` → `version`
-2. `detection-rules.json` → `version`
-3. `hooks/session-start.py` → `ROUTINE_VERSION`
+2. `hooks/session-start.py` → `ROUTINE_VERSION`
+3. `hooks/user-prompt-submit.py` → `ROUTINE_VERSION`
+4. `hooks/post-tool-use.py` → `ROUTINE_VERSION`
+5. `hooks/stop.py` → `ROUTINE_VERSION`
+6. `hooks/session-end.py` → `ROUTINE_VERSION`
 
-The version field is single-source-of-truth in `plugin.json`; the other two are mirrors. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all three.
+The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants are mirrors that travel with the hook code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all six.
+
+(`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 
 ## Don't paste regulator-presentable claims into the public methodology slices
 

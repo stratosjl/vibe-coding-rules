@@ -1,6 +1,6 @@
 {
   "name": "vc-roe",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "VC-RoE - Vibe Coding · Rules of Engagement. A Claude Code plugin that auto-detects project complexity (Scope x Criticality) and injects the matching methodology slice as additionalContext at SessionStart. Five tiers: T0 ad-hoc through T4 mission-critical regulated. Hook-driven heartbeat (UserPromptSubmit + Stop sentinel + PostToolUse fallback) keeps long sessions on cadence.",
   "author": {
     "name": "Stratos Laspas",
