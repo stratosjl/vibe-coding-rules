@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# vc-roe pre-push hook - cross-machine, version-controlled.
+#
+# Activated by `bin/install-hooks.sh` which sets
+# `git config --local core.hooksPath .githooks` per-clone. Once active,
+# every `git push` from this clone runs the combined-audit harness; any
+# tool FAIL blocks the push.
+#
+# Replaces the s61 operator-local stopgap at .git/hooks/pre-push (which
+# was not version-controlled and had to be reinstalled per machine).
+# v1.8.0 ship target per F-61-02 forward obligation.
+#
+# Behaviour: defer entirely to bin/publish-audit-combined.sh. Block the
+# push iff the harness exits non-zero (any tool FAIL). WARN-only results
+# (e.g., gitleaks absent) do not block.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+HARNESS="$REPO_ROOT/bin/publish-audit-combined.sh"
+
+if [ ! -r "$HARNESS" ]; then
+  echo "vc-roe pre-push: $HARNESS not found; cannot audit. Aborting push for safety." >&2
+  exit 1
+fi
+
+echo "vc-roe pre-push: running combined-audit harness..." >&2
+bash "$HARNESS"
+audit_rc=$?
+
+if [ "$audit_rc" -ne 0 ]; then
+  echo "" >&2
+  echo "vc-roe pre-push: combined-audit FAILED (rc=$audit_rc). Push BLOCKED." >&2
+  echo "Run 'bash bin/publish-audit-combined.sh --verbose' for per-tool detail." >&2
+  exit 1
+fi
+
+echo "vc-roe pre-push: combined-audit clean. Proceeding with push." >&2
+exit 0
