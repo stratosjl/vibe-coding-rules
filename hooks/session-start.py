@@ -73,7 +73,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.9.1"
+ROUTINE_VERSION = "1.10.0"
 ANCHOR_DIR = Path("/tmp")
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
@@ -88,10 +88,20 @@ TIER_FLOOR_PREVIOUS_FILENAME = "methodology-tier-floor.previous"
 # v1.9.0 (F-63-01 Layer 4): adds worktree-aware bypass — claim skipped
 # entirely when CWD sits inside a `git worktree` (operator escape valve
 # for parallel work).
+# v1.10.0 (F-63-01 Layer 2): adds mode + writer_session_id + writer_*_ts
+# + writer_idle_demote_seconds fields. SessionStart acquires mode=reader;
+# multiple alive-reader chats coexist (no refuse). PostToolUse promotes
+# the claim to mode=writer on first imminent write (watched-path edit or
+# git-mutation Bash); writer is exclusive. Stop demotes writer→reader
+# after writer_idle_demote_seconds of no mutation. Legacy v1.3.0..v1.9.x
+# claims (no mode field) preserve exclusive-claim semantics for safety.
 CLAIM_FILENAME = "chat-claim.json"
 CLAIM_TTL_ENV_VAR = "VC_ROE_CLAIM_TTL_HOURS"
 DEFAULT_CLAIM_TTL_HOURS = 8.0
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+MODE_READER = "reader"
+MODE_WRITER = "writer"
+DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 
 # v1.4.0: publish-state broadcast (OBS-vcroe-coordination-cron-broadcast-01
 # closure). A user crontab is expected to run `bash bin/publish-audit-state.sh
@@ -471,13 +481,25 @@ def read_claim(cwd: Path) -> Optional[dict[str, Any]]:
 
 
 def write_claim(cwd: Path, session_id: str, ts: int, host: str,
-                pid: int, pid_starttime: Optional[str], boot_id: str) -> bool:
+                pid: int, pid_starttime: Optional[str], boot_id: str,
+                mode: str = MODE_READER,
+                writer_session_id: Optional[str] = None,
+                writer_acquired_ts: Optional[int] = None,
+                writer_last_mutation_ts: Optional[int] = None,
+                writer_idle_demote_seconds: int = DEFAULT_WRITER_IDLE_DEMOTE_SECONDS,
+                ) -> bool:
     """Write the chat-claim JSON.
 
     v1.9.0: schema gains pid + pid_starttime + boot_id for the liveness probe.
     pid_starttime may be None on platforms where it can't be read (macOS);
     in that case the field is stored as null and evaluate_claim falls back to
     the simpler is_pid_alive probe.
+
+    v1.10.0 (F-63-01 Layer 2): schema gains mode + writer_session_id +
+    writer_acquired_ts + writer_last_mutation_ts + writer_idle_demote_seconds.
+    SessionStart writes mode=reader with writer_* fields null. PostToolUse
+    promotes to mode=writer on first watched-path edit or git-mutation Bash.
+    Stop demotes writer→reader after writer_idle_demote_seconds idle.
     """
     path = claim_path(cwd)
     try:
@@ -489,6 +511,11 @@ def write_claim(cwd: Path, session_id: str, ts: int, host: str,
             "pid": pid,
             "pid_starttime": pid_starttime,
             "boot_id": boot_id,
+            "mode": mode,
+            "writer_session_id": writer_session_id,
+            "writer_acquired_ts": writer_acquired_ts,
+            "writer_last_mutation_ts": writer_last_mutation_ts,
+            "writer_idle_demote_seconds": writer_idle_demote_seconds,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -652,18 +679,30 @@ def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
     """Decide what to do with an existing chat-claim.
 
     Returns (action, info) where action is one of:
-        "take-new"     no existing claim; acquire fresh.
-        "resume"       claim's session_id matches current; refresh ts.
-        "take-orphan"  claim exists but TTL-expired, corrupt, or liveness
-                       probe (v1.9.0) shows the owning process is dead /
-                       host rebooted / PID recycled; take over.
-        "refuse"       claim exists, valid, owned by another live session;
-                       refuse this session and surface conflict.
+        "take-new"        no existing claim; acquire fresh.
+        "resume"          claim's session_id matches current; refresh ts.
+        "take-orphan"     claim exists but TTL-expired, corrupt, or liveness
+                          probe (v1.9.0) shows the owning process is dead /
+                          host rebooted / PID recycled; take over.
+        "refuse"          claim exists, valid, owned by another live writer
+                          (mode=writer) or a legacy-shape claim within TTL;
+                          refuse this session and surface conflict.
+        "reader-coexist"  v1.10.0 Layer 2: claim is mode=reader, owned by
+                          another live session within TTL; coexist as
+                          implicit-reader (do NOT overwrite the existing
+                          reader claim; multiple alive-readers per project
+                          is the new allowed shape).
 
     v1.9.0 (F-63-01 Layer 1): the liveness probe runs before the TTL check.
     If host matches and the owning PID is known-dead, or boot_id mismatches
     (host rebooted since the claim was written), we take-orphan immediately
     rather than waiting out the full TTL.
+
+    v1.10.0 (F-63-01 Layer 2): the reader-coexist branch runs AFTER the
+    liveness probe and BEFORE the legacy TTL-refuse path. Only mode=reader
+    claims coexist; mode=writer claims and legacy v1.3.0..v1.9.x no-mode
+    claims still hit the refuse path (exclusive-claim semantics preserved
+    for both the new writer-lease and the legacy compat surface).
     """
     if not claim or not isinstance(claim, dict):
         return ("take-new", {"reason": "no-existing-claim"})
@@ -739,7 +778,27 @@ def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
     if age_seconds >= ttl_seconds:
         info["reason"] = "ttl-expired"
         return ("take-orphan", info)
+
+    # v1.10.0 (F-63-01 Layer 2): reader-coexist branch. If the existing
+    # claim is mode=reader and we got here (liveness probe did not
+    # auto-orphan + within TTL), the owning chat is alive-reader. Coexist
+    # as implicit-reader rather than refuse. The on-disk claim is left
+    # untouched; our session has no persistent presence (intentional —
+    # reader identity is not regulator-presentable evidence, so we save
+    # the file-write and the second-reader's write would clobber the first
+    # reader's pid/boot_id/ts anyway, breaking the first reader's
+    # liveness probe surface for any later writer-promotion attempt).
+    # Legacy claims (v1.3.0..v1.9.x, no mode field) DO NOT match here —
+    # they fall through to the refuse path to preserve v1.9.x semantics
+    # for sessions that pre-date the Layer 2 rollout.
+    existing_mode = str(claim.get("mode", "") or "").strip()
+    if existing_mode == MODE_READER:
+        info["existing_mode"] = MODE_READER
+        info["reason"] = "reader-coexist"
+        return ("reader-coexist", info)
+
     info["reason"] = "active-claim-conflict"
+    info["existing_mode"] = existing_mode or "legacy"
     return ("refuse", info)
 
 
@@ -961,6 +1020,13 @@ def main() -> int:
     # chat no longer parks the claim for the full TTL. Layer 4 short-circuits
     # the whole acquire path when cwd is inside a git worktree — explicit
     # parallel-work escape valve, composes with EnterWorktree agent isolation.
+    #
+    # v1.10.0 (F-63-01 Layer 2): SessionStart acquires mode=reader (multiple
+    # alive-reader chats coexist on the same project). When evaluate_claim
+    # returns "reader-coexist", we DO NOT overwrite the existing reader
+    # claim — we operate as an implicit-reader without persistent file
+    # presence. Writer-promotion happens later in PostToolUse on first
+    # imminent write.
     session_id = str(event.get("session_id") or "")
     ttl_hours = claim_ttl_hours()
     claim_action = "no-session-id"
@@ -985,10 +1051,16 @@ def main() -> int:
             )
             if claim_action == "refuse":
                 claim_banner_text = claim_refuse_banner(claim_info, ttl_hours, cwd)
+            elif claim_action == "reader-coexist":
+                # v1.10.0 Layer 2: do not write. Existing reader claim
+                # remains authoritative; our session is an implicit-reader.
+                pass
             else:
+                # take-new / resume / take-orphan: write fresh reader claim.
                 write_claim(
                     cwd, session_id, int(started), host,
                     our_pid, our_pid_starttime, our_boot_id,
+                    mode=MODE_READER,
                 )
 
     sc_trace = f"({s}/{c})" if s and c else "(override)"
