@@ -4,6 +4,25 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.8.1 - 2026-05-12
+
+Closes `OBS-vcroe-combined-harness-fresh-clone-email-false-positive-01` (opened s63, carried OPEN through s64). Patch-class semver: single-file logic change in `bin/publish-audit.sh` to switch the author-email gate from audit-machine state (`git config user.email`) to committed-content state (`git log -1 --format='%ae'`). No DENY/WARN pattern set change, no hook runtime change, no methodology-content change.
+
+What changed:
+
+- **`bin/publish-audit.sh` author-email check rewritten.** Previously read `git config user.email` and compared against `PUBLIC_AUTHOR_EMAIL`. That check answered the wrong question for the post-publish state-audit context: a freshly cloned tempdir inherits the audit machine's GLOBAL `user.email` (the operator's private email), not the public-canonical per-repo override, producing a deny-hit against verifiably-clean committed content. The check now reads HEAD's author email (`git log -1 --format='%ae'`) which is the committed content itself, directly answering the leak question "is the published content from the canonical public author?". Pre-push semantics are preserved: a commit authored with a non-canonical email lands in HEAD and the next `publish-audit.sh` run catches it. The empty-repo case (no commits) is silent by design — there is no committed content to leak. Header label updated from "scanning author / committer email in staged changes" to "scanning HEAD commit author email (committed-content check)" for accuracy.
+- **`HARNESS_VERSION` in `bin/publish-audit-combined.sh` bumped to `1.8.1`** in lockstep with the plugin release so the harness banner output (`combined-audit harness v1.8.1 starting`) matches the bundle version it ships inside. This constant is not on the CONTRIBUTING.md mandatory mirror list (which covers `plugin.json` + the five hook `ROUTINE_VERSION`s); the operator decision at s65 plan-gate was to track it with plugin version for banner-optics consistency.
+- **`ROUTINE_VERSION` bumped to `1.8.1`** across all five hooks (`session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, `session-end.py`); `.claude-plugin/plugin.json` `version` field bumped to match.
+
+What this does NOT change: pre-push DENY/WARN pattern set in `bin/audit-patterns.sh`; the combined-audit harness wiring (`publish-audit-state.sh`, `gitleaks` head + history, `test-audit-patterns.py`, inline credential heuristics); the W2 split semantics from v1.6.0; SessionStart `additionalContext` shape; chat-claim primitive (v1.3.0); heartbeat-cadence semantics; tier-detection precedence; any methodology-content slice. Pure tooling-correctness fix.
+
+Operator-side action required to pick up v1.8.1:
+
+1. `claude plugin update vc-roe@vibe-coding-rules` writes the new files; close every Claude Code window/process and reopen so the in-memory hook snapshot is refreshed. The next session-open hook log entry will read `routine_version: "1.8.1"`.
+2. No re-install of `.githooks/pre-push` needed; the hook continues to invoke `bin/publish-audit-combined.sh` and now passes from a fresh clone without the per-clone `git config user.email` workaround.
+
+Why now: the v1.8.0 ship at s63 surfaced the false-positive as `OBS-vcroe-combined-harness-fresh-clone-email-false-positive-01` and queued option (c) (the HEAD `%ae` check) for v1.8.1 under T3 item 11 deferral-closure-date discipline. The closure trigger was "2026-05-26 OR next push to origin/main, whichever earlier"; s65 selects option A (v1.8.1 patch) to discharge the obligation before either gate fires. Eliminates the workaround documented in s64 audit-trail step 1 ("`git config user.email stratosjl@gmail.com`" set in every tempdir clone before `bin/publish-audit-combined.sh`), so future state audits run unmodified.
+
 ## 1.8.0 - 2026-05-12
 
 Ships the combined-audit harness `bin/publish-audit-combined.sh` and migrates the pre-push hook from the s61 operator-local stopgap (per-machine, not version-controlled) to a cross-machine version-controlled hook at `.githooks/pre-push` activated by a one-time `bin/install-hooks.sh` bootstrap. Closes `F-61-02` forward obligation; satisfies the `T3 item 11` deferral-closure-date discipline trigger (v1.7.0) requiring closure before v1.6.0 soak completes (≥ 2026-05-18) or before the next push to `origin/main`, whichever earlier. Minor-class semver because the audit infrastructure gains a new tool, a new hook entry point, and a new contributor-install procedure; no hook runtime change in `hooks/*.py` aside from the lockstep `ROUTINE_VERSION` bump; no pre-push DENY/WARN pattern set change in `bin/audit-patterns.sh`.

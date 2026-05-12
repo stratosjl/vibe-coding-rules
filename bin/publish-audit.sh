@@ -70,11 +70,17 @@ for pat in "${WARN_PATTERNS[@]}"; do
   fi
 done
 
-hdr "scanning author / committer email in staged changes"
+hdr "scanning HEAD commit author email (committed-content check)"
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  author=$(git config user.email 2>/dev/null || echo '')
+  # Read the committed-content author email at HEAD instead of the audit-machine's
+  # git config. Closes OBS-vcroe-combined-harness-fresh-clone-email-false-positive-01:
+  # a fresh clone (post-publish state-audit context) inherits the audit machine's
+  # global user.email, which is not the canonical public author. Checking HEAD %ae
+  # answers the leak question directly ("is the published content from the canonical
+  # author?") without depending on the audit machine's local config.
+  author=$(git log -1 --format='%ae' 2>/dev/null || echo '')
   if [ -n "$author" ] && [ "$author" != "$PUBLIC_AUTHOR_EMAIL" ]; then
-    hit "git config user.email is '$author', expected '$PUBLIC_AUTHOR_EMAIL' for public-repo work"
+    hit "HEAD commit author email is '$author', expected '$PUBLIC_AUTHOR_EMAIL' for public-repo content"
     deny_hits=$((deny_hits + 1))
   fi
 fi
