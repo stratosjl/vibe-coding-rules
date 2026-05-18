@@ -14,8 +14,8 @@ Action:
 5. Once the operator answers, log the demotion in your context: `Tier demoted from T<N> to T<N-1>. Reason: <reason>.` From this point on, apply the methodology rules for the new tier for the rest of the session.
 6. **Rewrite the anchor TIER via helper script (always; this is the session-scope effect, applies for both default and `--project` invocations).** Use the Bash tool to run the block below, substituting the computed new tier (e.g. `T1` if demoting from T2) for the literal `<NEW_TIER>` token. The helper script `bin/anchor-rewrite.sh` carries the v0.3.0 ups-marker Layer 1 + v0.2.0 transcript-derived Layer 2 + size tie-break Layer 3:
    ```bash
-   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/vc-roe/bin/anchor-rewrite.sh"
-   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins/cache" -name anchor-rewrite.sh -path '*vc-roe*' -o -path '*vc-roe*' 2>/dev/null | sort -V | tail -1)
+   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
+   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
    [ -x "$PLUGIN_BIN" ] && bash "$PLUGIN_BIN" "<NEW_TIER>" || echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
    ```
    Without this rewrite, the UserPromptSubmit hook keeps reading the original anchor TIER and may continue emitting clock tags for a tier the operator just demoted out of.

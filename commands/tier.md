@@ -27,8 +27,8 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
 4. Acknowledge the override in your context: `Tier set to $ARGUMENTS for this session. Direction: <elevation|demotion|no-change>. Scope: <session|project>.` From this point on, follow the methodology rules for the requested tier.
 5. **Rewrite the anchor TIER via helper script (always; all directions apply this).** The v0.1.7 UserPromptSubmit hook reads `TIER=` from `/tmp/claude-methodology-anchor-<session_id>` and short-circuits to no-op at T0/T1; without rewriting that line, an override from auto-T0 to T2+ leaves heartbeat enforcement silent. The helper carries v0.3.0 ups-marker Layer 1 + v0.2.0 transcript-derived Layer 2 + size tie-break Layer 3:
    ```bash
-   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/vc-roe/bin/anchor-rewrite.sh"
-   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins/cache" -name anchor-rewrite.sh -path '*vc-roe*' -o -path '*vc-roe*' 2>/dev/null | sort -V | tail -1)
+   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
+   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
    [ -x "$PLUGIN_BIN" ] && bash "$PLUGIN_BIN" "$ARGUMENTS" || echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
    ```
 6. **Set the project tier floor**:
