@@ -53,6 +53,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -73,8 +74,8 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.10.1"
-ANCHOR_DIR = Path("/tmp")
+ROUTINE_VERSION = "1.10.2"
+ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
 TIER_FLOOR_PREVIOUS_FILENAME = "methodology-tier-floor.previous"

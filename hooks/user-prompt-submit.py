@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -34,8 +35,8 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.10.1"
-ANCHOR_DIR = Path("/tmp")
+ROUTINE_VERSION = "1.10.2"
+ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
@@ -86,7 +87,7 @@ def write_session_marker(session_id: str, cwd: Optional[str]) -> None:
         return
     try:
         cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(Path(cwd).resolve()))  # OBS-MET-AJ
-        marker = Path("/tmp") / f"claude-methodology-current-session-{cwd_dashed}"
+        marker = ANCHOR_DIR / f"claude-methodology-current-session-{cwd_dashed}"  # OBS-MET-AK
         marker.write_text(session_id + "\n", encoding="utf-8")
     except Exception:
         pass
