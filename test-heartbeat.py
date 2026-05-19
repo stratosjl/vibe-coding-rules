@@ -26,7 +26,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent
 HOOK = PLUGIN_ROOT / "hooks" / "post-tool-use.py"
 STOP_HOOK = PLUGIN_ROOT / "hooks" / "stop.py"
-ANCHOR_DIR = Path("/tmp")
+ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 
 
 def write_anchor(session_id: str, t0: int, last_hb: int, tier: str = "T4",
@@ -103,7 +103,7 @@ def run_post_tool_use(session_id: str, transcript_path: Path,
     env = os.environ.copy()
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     proc = subprocess.run(
-        ["python3", str(HOOK)],
+        [sys.executable, str(HOOK)],
         input=json.dumps(event).encode("utf-8"),
         capture_output=True,
         env=env,
@@ -122,7 +122,7 @@ def run_stop(session_id: str, transcript_path: Path) -> tuple[int, str]:
     env = os.environ.copy()
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     proc = subprocess.run(
-        ["python3", str(STOP_HOOK)],
+        [sys.executable, str(STOP_HOOK)],
         input=json.dumps(event).encode("utf-8"),
         capture_output=True,
         env=env,

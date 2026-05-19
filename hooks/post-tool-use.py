@@ -45,6 +45,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -56,8 +57,8 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.10.1"
-ANCHOR_DIR = Path("/tmp")
+ROUTINE_VERSION = "1.10.2"
+ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 UPS_MARKER_PREFIX = "claude-methodology-current-session-"
@@ -159,7 +160,7 @@ def check_marker_mismatch(session_id: str, cwd_raw: Optional[str]) -> None:
         return
     try:
         cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(Path(cwd_raw).resolve()))
-        marker = Path("/tmp") / f"{UPS_MARKER_PREFIX}{cwd_dashed}"
+        marker = ANCHOR_DIR / f"{UPS_MARKER_PREFIX}{cwd_dashed}"  # OBS-MET-AK
         if not marker.is_file():
             return
         marker_session = marker.read_text(encoding="utf-8").strip()
