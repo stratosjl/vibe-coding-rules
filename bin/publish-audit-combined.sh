@@ -48,7 +48,7 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
-HARNESS_VERSION="1.10.2"
+HARNESS_VERSION="1.10.3"
 VERBOSE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
