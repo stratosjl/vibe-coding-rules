@@ -57,7 +57,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.10.3"
+ROUTINE_VERSION = "1.10.4"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -411,6 +411,16 @@ def main() -> int:
     # to bridge the gap ([INT-A] M0 build 2026-05-09 stalled 50 min
     # before operator typed "where are we"). Emit decision="block" so
     # Claude Code re-prompts the assistant for follow-up text.
+    # v1.10.4 (OBS-S60-01): Claude Code's transcript writer is async w.r.t.
+    # the Stop hook trigger. When the assistant emits a final text block
+    # within ~100 ms of agent-loop end, Stop can fire BEFORE the text-block
+    # JSONL line is flushed; the hook reads a stale view with only
+    # [tool_use, tool_result] visible, computes has_text=False, and false-
+    # positives. Mitigation: when the silent-stop condition appears to
+    # trip on first read, sleep 500 ms and re-read. A true silent-stop
+    # still shows has_text=False after the wait (block fires correctly,
+    # delayed 500 ms); a flush-race false-positive shows has_text=True
+    # after the wait (block correctly suppresses). Safe in both directions.
     blocks = last_assistant_blocks(transcript_path)
     has_text = any(
         isinstance(b, dict)
@@ -422,6 +432,19 @@ def main() -> int:
         isinstance(b, dict) and b.get("type") == "tool_use"
         for b in (blocks or [])
     )
+    if has_tool_use and not has_text:
+        time.sleep(0.5)  # OBS-S60-01: re-poll past Claude Code transcript flush race
+        blocks = last_assistant_blocks(transcript_path)
+        has_text = any(
+            isinstance(b, dict)
+            and b.get("type") == "text"
+            and (b.get("text") or "").strip()
+            for b in (blocks or [])
+        )
+        has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in (blocks or [])
+        )
     if has_tool_use and not has_text:
         output = {
             "decision": "block",
