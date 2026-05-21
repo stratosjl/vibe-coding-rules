@@ -144,6 +144,25 @@ python3 vibe-coding-rules/test-detection.py
 
 The validation runner spins up synthetic project fixtures under a temp dir; clean across all five expected tiers means the detection logic is intact.
 
+## Platform coverage notes
+
+This section documents known platform-coverage gaps that are intentionally accepted rather than fixed in the current code surface.
+
+### OBS-MET-AK macOS extension
+
+The v1.10.2 fix harmonized the Python session-start hook (writer of the per-session methodology anchor at `<tmpdir>/claude-methodology-anchor-<session_id>`) and `bin/anchor-rewrite.sh` (reader, invoked by the `/vc-roe:tier`, `/raise-tier`, `/lower-tier` slash commands) on Windows by switching the Python side from `Path("/tmp")` to `Path(tempfile.gettempdir())`. On Windows this matches git-bash's `/tmp` mapping (both resolve to `%TEMP%`). On Linux both also collapse to `/tmp` and the fix is complete.
+
+**On macOS the fix is incomplete.** Apple's per-user `TMPDIR` env var defaults to `/var/folders/<x>/<y>/T/`, so `tempfile.gettempdir()` returns that path while `bin/anchor-rewrite.sh` still reads from literal `/tmp`. The same writer/reader divergence the v1.10.2 fix closed on Windows is therefore still present on macOS. The maintainer is not currently developing on macOS and has not had a session to reproduce, instrument, or test a fix. The OBS-MET-AK annotation in the four hook files at the `ANCHOR_DIR` constructor and the marker-file sites is the canonical entry-point for the fix in the code surface.
+
+Two closure paths when a macOS development environment is available:
+
+1. **Extend `bin/anchor-rewrite.sh` to resolve the tempdir via Python** rather than hard-coding `/tmp`. The reader becomes `TMPDIR=$(python -c 'import tempfile; print(tempfile.gettempdir())')`; the rest of the script uses `$TMPDIR` rather than literal `/tmp`. Lowest-risk patch-class change; restores parity with the writer on all three OSes.
+2. **Coordinate on a single tempdir convention across both runtimes**, e.g., always `~/.cache/vc-roe/anchors/` (XDG-style on Linux, `~/Library/Caches/vc-roe/anchors/` on macOS, `%LOCALAPPDATA%\vc-roe\anchors\` on Windows). Cleaner refactor; touches both Python and bash; minor-class change.
+
+Option 1 is the natural next ship cycle. Option 2 stays a parking-lot item.
+
+**Workaround for anyone hitting `No session-scoped anchor resolvable` on macOS:** set `TMPDIR=/tmp` in the environment that launches Claude Code before the first SessionStart fires. This forces `tempfile.gettempdir()` to return `/tmp`, re-establishing parity with the bash reader. Persistent across the Claude Code process lifetime; doesn't affect other Python apps that rely on Apple's default `TMPDIR`.
+
 ## Licensing
 
 Dual-licensed:
