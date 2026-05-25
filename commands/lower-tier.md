@@ -21,6 +21,10 @@ Action:
      SLICE="$PLUGIN_ROOT/methodology-content/<NEW_TIER>.md"
      if [ -r "$SLICE" ]; then
        echo "Methodology slice for <NEW_TIER> resolved at: $SLICE"
+       echo ""
+       echo "--- methodology slice <NEW_TIER> begin ---"
+       cat "$SLICE"
+       echo "--- methodology slice <NEW_TIER> end ---"
      else
        echo "Methodology slice file for <NEW_TIER> not found at $PLUGIN_ROOT/methodology-content/; falling back to general familiarity with <NEW_TIER> prescriptions."
      fi
@@ -28,7 +32,7 @@ Action:
      echo "Plugin root not resolvable; falling back to general familiarity with <NEW_TIER> prescriptions."
    fi
    ```
-   Then use the `Read` tool on the `$SLICE` path printed by the Bash block. From this point on, the loaded slice is the authoritative rule set for the remainder of the session. If the Bash block printed a "fallback" message, surface it to the operator inline (the demotion acknowledgement remains valid; only the slice-text load failed).
+   Then use the `Read` tool on the `$SLICE` path printed by the Bash block. The Bash block also emits the slice content inline between `--- methodology slice <NEW_TIER> begin ---` and `--- methodology slice <NEW_TIER> end ---` markers (v1.12.0 belt-and-braces; closes Issue #1 point 3) so the operator sees the slice rendered in the chat output without expanding the Read tool result. From this point on, the loaded slice is the authoritative rule set for the remainder of the session. If the Bash block printed a "fallback" message instead of the slice content, surface it to the operator inline (the demotion acknowledgement remains valid; only the slice-text load failed).
 7. **Rewrite the anchor TIER via helper script (always; this is the session-scope effect, applies for both default and `--project` invocations).** Use the Bash tool to run the block below, substituting the computed new tier (e.g. `T1` if demoting from T2) for the literal `<NEW_TIER>` token. The helper script `bin/anchor-rewrite.sh` carries the v0.3.0 ups-marker Layer 1 + v0.2.0 transcript-derived Layer 2 + size tie-break Layer 3:
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
