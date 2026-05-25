@@ -34,6 +34,10 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
      SLICE="$PLUGIN_ROOT/methodology-content/$ARGUMENTS.md"
      if [ -r "$SLICE" ]; then
        echo "Methodology slice for $ARGUMENTS resolved at: $SLICE"
+       echo ""
+       echo "--- methodology slice $ARGUMENTS begin ---"
+       cat "$SLICE"
+       echo "--- methodology slice $ARGUMENTS end ---"
      else
        echo "Methodology slice file for $ARGUMENTS not found at $PLUGIN_ROOT/methodology-content/; falling back to general familiarity with $ARGUMENTS prescriptions."
      fi
@@ -41,7 +45,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
      echo "Plugin root not resolvable; falling back to general familiarity with $ARGUMENTS prescriptions."
    fi
    ```
-   Then use the `Read` tool on the `$SLICE` path printed by the Bash block. From this point on, the loaded slice is the authoritative rule set for the remainder of the session. If the Bash block printed a "fallback" message, surface it to the operator inline (the elevation acknowledgement remains valid; only the slice-text load failed).
+   Then use the `Read` tool on the `$SLICE` path printed by the Bash block. The Bash block also emits the slice content inline between `--- methodology slice $ARGUMENTS begin ---` and `--- methodology slice $ARGUMENTS end ---` markers (v1.12.0 belt-and-braces; closes Issue #1 point 3) so the operator sees the slice rendered in the chat output without expanding the Read tool result. From this point on, the loaded slice is the authoritative rule set for the remainder of the session. If the Bash block printed a "fallback" message instead of the slice content, surface it to the operator inline (the elevation acknowledgement remains valid; only the slice-text load failed).
 6. **Rewrite the anchor TIER via helper script (always; all directions apply this).** The v0.1.7 UserPromptSubmit hook reads `TIER=` from `/tmp/claude-methodology-anchor-<session_id>` and short-circuits to no-op at T0/T1; without rewriting that line, an override from auto-T0 to T2+ leaves heartbeat enforcement silent. The helper carries v0.3.0 ups-marker Layer 1 + v0.2.0 transcript-derived Layer 2 + size tie-break Layer 3:
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
