@@ -1,5 +1,5 @@
 ---
-description: Demote the effective tier by one step (T4->T3, T3->T2, T2->T1, T1->T0). Default at v0.5.0 (v4.1) is session-scope only (preserves v0.4.0 default); use --project to also lower the project tier floor for all future sessions (HWM is elevation-only by definition; demotion-via-flag preserved). Asks for a one-line reason.
+description: Demote the effective tier by one step (T4->T3, T3->T2, T2->T1, T1->T0). Default is session-scope only (preserves v0.4.0 default); use --project to also lower the project tier floor AND `tier: T<N>` sentinel in CLAUDE.md for all future sessions and across machines (v1.13.0 symmetry with `/tier` and `/raise-tier`). Asks for a one-line reason.
 argument-hint: "[--project]"
 ---
 
@@ -40,7 +40,7 @@ Action:
    [ -x "$PLUGIN_BIN" ] && bash "$PLUGIN_BIN" "<NEW_TIER>" || echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
    ```
    Without this rewrite, the UserPromptSubmit hook keeps reading the original anchor TIER and may continue emitting clock tags for a tier the operator just demoted out of.
-8. **Set the project tier floor — ONLY IF `$ARGUMENTS` contains `--project`** (v0.4.0 OBS-MET-AG closure; default is session-scope only). If `--project` is present, run the Bash tool block below substituting the new tier for `<NEW_TIER>`:
+8. **Set the project tier floor ONLY IF `$ARGUMENTS` contains `--project`** (v0.4.0 OBS-MET-AG closure; default is session-scope only). If `--project` is present, run the Bash tool block below substituting the new tier for `<NEW_TIER>`:
    ```bash
    PROJ_DIRNAME=$(python -c 'import os, re; print(re.sub(r"[^A-Za-z0-9-]", "-", os.path.realpath(os.getcwd())))')  # OBS-MET-AJ
    PROJ_DIR="$HOME/.claude/projects/$PROJ_DIRNAME"
@@ -49,6 +49,23 @@ Action:
    echo "Project tier floor lowered to <NEW_TIER> at $PROJ_DIR/methodology-tier-floor (--project flag provided; sticky across all future sessions of this project)."
    ```
    If `--project` is NOT present, SKIP this block. Do not write the floor marker. The demotion takes effect for THIS session only via the anchor rewrite in step 6.
-9. Disclose to the operator:
-   - Without `--project`: `Tier demoted to T<N-1> for THIS SESSION ONLY (v0.4.0 default). Project tier floor unchanged. Use /lower-tier --project if you want the demotion to stick across all future sessions of this project. Re-raise via /tier or /raise-tier if the session-scope demotion was an accident.`
-   - With `--project`: `Tier demoted to T<N-1> for this session AND project tier floor lowered to T<N-1> for all future sessions of this project (--project flag provided). Re-raise via /tier or /raise-tier --project if the demotion was temporary.`
+9. **Write the `tier: T<N>` sentinel to project-root CLAUDE.md ONLY IF `$ARGUMENTS` contains `--project`** (v1.13.0 symmetry with `/tier` and `/raise-tier`; closes 1b for the demotion side). If `--project` is NOT present, SKIP this block; the session-only demotion does not touch the sentinel and next session will resume at the higher tier per the sentinel/floor. If `--project` is present, the demotion must also lower the CLAUDE.md sentinel; otherwise the sentinel (which has absolute priority over floor and auto-detect per `find_tier_in_claude_md`) would re-elevate the tier at next SessionStart, silently negating the operator-requested demotion. Substitute the new tier for `<NEW_TIER>`:
+   ```bash
+   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
+   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
+   if [ -x "$PLUGIN_BIN" ]; then
+     PLUGIN_ROOT=$(dirname "$(dirname "$PLUGIN_BIN")")
+     SENTINEL_HELPER="$PLUGIN_ROOT/bin/claude-md-sentinel.py"
+     if [ -r "$SENTINEL_HELPER" ]; then
+       python "$SENTINEL_HELPER" "<NEW_TIER>"
+     else
+       echo "claude-md-sentinel.py not found at $SENTINEL_HELPER; CLAUDE.md sentinel NOT updated. Floor file written; next-session demotion not portable across machines without manual CLAUDE.md edit."
+     fi
+   else
+     echo "Plugin root not resolvable; CLAUDE.md sentinel NOT updated. Floor file written; next-session demotion not portable across machines without manual CLAUDE.md edit."
+   fi
+   ```
+10. Also instruct the assistant: **From your VERY NEXT reply onward, prepend the first-line rule from the loaded slice (e.g., `Detected tier: <NEW_TIER> (S<x>/C<y>), <label>. Override with /vc-roe:tier <T0..T4> if wrong.`) to every assistant reply for the remainder of the session** (v1.13.0 closes 2; first-line MUST rule applies on mid-session slice load too, not only at SessionStart).
+11. Disclose to the operator:
+    - Without `--project`: `Tier demoted to T<N-1> for THIS SESSION ONLY (v0.4.0 default). Project tier floor unchanged; CLAUDE.md sentinel unchanged. Use /lower-tier --project if you want the demotion to stick across all future sessions and across machines. Re-raise via /tier or /raise-tier if the session-scope demotion was an accident.`
+    - With `--project`: `Tier demoted to T<N-1> for this session, project tier floor lowered to T<N-1>, AND tier: T<N-1> sentinel updated in project-root CLAUDE.md (--project flag provided; sticky across all future sessions of this project AND portable across all machines the repo syncs to). Commit the CLAUDE.md change to git to propagate the demotion to other machines. Re-raise via /tier or /raise-tier if the demotion was temporary.`
