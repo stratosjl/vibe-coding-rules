@@ -89,6 +89,38 @@ def build_fixtures(parent: Path) -> list[dict[str, Any]]:
     )
     cases.append({"cwd": str(fix3b), "expected_tier": "T3", "note": "S0 + C2 (≥2 regulatory keywords) → T3 from matrix"})
 
+    # v1.13.0: T4 via CLAUDE.md sentinel in YAML frontmatter (1b portability fix).
+    # Verifies find_tier_in_claude_md(session-start.py:150) picks up the sentinel
+    # written by bin/claude-md-sentinel.py, with absolute precedence over auto.
+    fix_sentinel = make_fixture(
+        parent,
+        "v113-sentinel-frontmatter",
+        {
+            "CLAUDE.md": "---\ntier: T4\n---\n\n# Project\n\nMinimal content.\n",
+        },
+    )
+    cases.append({
+        "cwd": str(fix_sentinel),
+        "expected_tier": "T4",
+        "note": "v1.13.0: YAML frontmatter `tier: T4` sentinel overrides auto (1b)",
+    })
+
+    # v1.13.0: T4 via CLAUDE.md sentinel as bare legacy line (no frontmatter).
+    # Verifies the reader's permissive regex (^\s*tier:\s*T([0-4])\b) matches
+    # legacy CLAUDE.md formats too.
+    fix_sentinel_bare = make_fixture(
+        parent,
+        "v113-sentinel-bare",
+        {
+            "CLAUDE.md": "# Project\n\ntier: T4\n\nSome body content.\n",
+        },
+    )
+    cases.append({
+        "cwd": str(fix_sentinel_bare),
+        "expected_tier": "T4",
+        "note": "v1.13.0: bare legacy `tier: T4` line also recognised as sentinel (backwards-compat)",
+    })
+
     return cases
 
 
@@ -108,7 +140,7 @@ def run_hook(cwd: str) -> dict[str, Any]:
     env.pop("CLAUDE_TIER", None)
 
     proc = subprocess.run(
-        ["python3", str(HOOK)],
+        [sys.executable, str(HOOK)],
         input=json.dumps(event).encode("utf-8"),
         capture_output=True,
         env=env,
@@ -161,6 +193,15 @@ def parse_additional(additional: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    # v1.13.0 cross-platform fix: Windows console defaults to cp1252 which
+    # cannot encode unicode glyphs in fixture notes (e.g. `>=`). Reconfigure
+    # stdout to UTF-8 with replace-on-error so the suite runs on both
+    # Linux and Windows without spurious UnicodeEncodeError.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-fixtures-"))
     try:
         cases = build_fixtures(parent)
