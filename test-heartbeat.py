@@ -462,6 +462,49 @@ def case_silent_stop_no_tool_use_does_not_block(tmp: Path) -> tuple[bool, str]:
         _cleanup(sid)
 
 
+def case_silent_stop_with_thinking_does_not_block(tmp: Path) -> tuple[bool, str]:
+    """v1.12.1 OBS-vcroe-thinking-block-replay-01: thinking present -> no block.
+
+    Extended-thinking turns carry a thinking block before the tool_use.
+    Emitting {"decision":"block"} on that shape forces Claude Code to
+    replay the finalized assistant message; the thinking blocks lose
+    byte-identity with the original signed response and the API rejects
+    the replay with 400 "thinking blocks ... cannot be modified". The
+    has_thinking guard stands the blocker down: the walk yields
+    has_tool_use=True, has_text=False, has_thinking=True, so no decision
+    is emitted. Stop falls through to the sentinel-grep path and returns
+    0 with empty stdout.
+    """
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        t0 = now - 5 * 60
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "install vitest"},
+            {"role": "assistant",
+             "blocks": [
+                 {"type": "thinking",
+                  "thinking": "I should install vitest before continuing",
+                  "signature": "sig-abc"},
+                 {"type": "tool_use", "id": "toolu_03",
+                  "name": "Bash",
+                  "input": {"command": "pnpm add -D vitest"}},
+             ]},
+            {"role": "tool-result", "text": "ok"},
+        ])
+        rc, stdout = run_stop(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: stop.py rc={rc}, stdout={stdout!r}"
+        if stdout.strip():
+            return False, (f"FAIL: stdout non-empty: {stdout!r}; thinking "
+                           f"block must suppress the silent-stop blocker")
+        return True, "OK (thinking present; silent-stop guard stood down)"
+    finally:
+        _cleanup(sid)
+
+
 def main() -> int:
     cases = [
         ("fresh sentinel advances", case_fresh_sentinel_advances),
@@ -479,6 +522,8 @@ def main() -> int:
          case_silent_stop_with_text_does_not_block),
         ("silent-stop no tool_use does not block (v1.1.3 OBS-50-01)",
          case_silent_stop_no_tool_use_does_not_block),
+        ("silent-stop with thinking does not block (v1.12.1)",
+         case_silent_stop_with_thinking_does_not_block),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     try:
