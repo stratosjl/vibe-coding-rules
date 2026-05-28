@@ -37,6 +37,20 @@ contains tool_use blocks but zero non-empty text blocks, Stop emits
 the chat silently. Adds last_assistant_blocks() as the underlying
 walker; last_assistant_text() now derives its result from it for code
 reuse. Walk-rule and skip-rules are unchanged from v1.1.2.
+
+v1.12.1 thinking-block guard (closes OBS-vcroe-thinking-block-replay-01):
+the v1.1.3 silent-stop blocker is incompatible with extended thinking.
+When the most-recent turn carries thinking/redacted_thinking blocks,
+emitting {"decision":"block"} forces Claude Code to replay the finalized
+assistant message to continue it; the thinking blocks then lose
+byte-identity with the original signed response and the API rejects the
+replay with 400 "thinking blocks in the latest assistant message cannot
+be modified", poisoning the transcript. Forcing a continuation ALWAYS
+corrupts the thinking-block replay, so the blocker now stands down (no
+block emitted) whenever thinking blocks are present. Trade-off:
+silent-stop protection is effectively disabled in thinking-enabled
+sessions (every such turn carries thinking blocks) — accepted, because
+the alternative is a guaranteed API crash that poisons the transcript.
 """
 
 from __future__ import annotations
@@ -57,7 +71,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.12.0"
+ROUTINE_VERSION = "1.12.1"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -421,6 +435,13 @@ def main() -> int:
     # still shows has_text=False after the wait (block fires correctly,
     # delayed 500 ms); a flush-race false-positive shows has_text=True
     # after the wait (block correctly suppresses). Safe in both directions.
+    # v1.12.1 (OBS-vcroe-thinking-block-replay-01): when the turn carries
+    # thinking/redacted_thinking blocks the blocker must stand down —
+    # decision="block" would force Claude Code to replay the finalized
+    # assistant message, the thinking blocks lose byte-identity with the
+    # original signed response, and the API rejects the replay with a 400
+    # that poisons the transcript. has_thinking is computed alongside the
+    # existing flags and gates both the re-poll and the block emit.
     blocks = last_assistant_blocks(transcript_path)
     has_text = any(
         isinstance(b, dict)
@@ -432,7 +453,12 @@ def main() -> int:
         isinstance(b, dict) and b.get("type") == "tool_use"
         for b in (blocks or [])
     )
-    if has_tool_use and not has_text:
+    has_thinking = any(
+        isinstance(b, dict)
+        and b.get("type") in ("thinking", "redacted_thinking")
+        for b in (blocks or [])
+    )
+    if has_tool_use and not has_text and not has_thinking:
         time.sleep(0.5)  # OBS-S60-01: re-poll past Claude Code transcript flush race
         blocks = last_assistant_blocks(transcript_path)
         has_text = any(
@@ -445,7 +471,12 @@ def main() -> int:
             isinstance(b, dict) and b.get("type") == "tool_use"
             for b in (blocks or [])
         )
-    if has_tool_use and not has_text:
+        has_thinking = any(
+            isinstance(b, dict)
+            and b.get("type") in ("thinking", "redacted_thinking")
+            for b in (blocks or [])
+        )
+    if has_tool_use and not has_text and not has_thinking:
         output = {
             "decision": "block",
             "reason": (
@@ -470,6 +501,20 @@ def main() -> int:
             "routine_version": ROUTINE_VERSION,
         })
         return 0
+
+    # v1.12.1: the silent-stop shape (tool_use, no text) was present but a
+    # thinking block forced the blocker to stand down. Record it so soak
+    # data can quantify how often protection is suppressed under thinking.
+    if has_tool_use and not has_text and has_thinking:
+        append_log({
+            "ts": time.time(),
+            "hook": "stop",
+            "session_id": session_id,
+            "blocked": False,
+            "reason": "silent-stop-suppressed-thinking",
+            "claim_status": claim_status,
+            "routine_version": ROUTINE_VERSION,
+        })
 
     text = last_assistant_text(transcript_path)
     if not text:
