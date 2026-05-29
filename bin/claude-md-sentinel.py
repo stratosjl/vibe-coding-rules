@@ -50,6 +50,25 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
+
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr emit non-ASCII paths regardless of host console codec.
+
+    On Windows the default console encoding is cp1252, which raises
+    UnicodeEncodeError when a project path contains characters outside Latin-1
+    (e.g. a Greek directory name). On Linux/macOS stdout is normally already
+    UTF-8, so this is a harmless no-op. Guarded with getattr because some
+    captured streams (e.g. test harnesses) expose no reconfigure().
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 VALID_TIER = re.compile(r"^T[0-4]$")
 # Reader uses `^\s*tier:\s*T([0-4])\b` for DETECTION (session-start.py:157), which
 # allows `\s*` to greedily span newlines. For WRITING we narrow to `[ \t]*` so
@@ -185,6 +204,7 @@ def write_sentinel(project_root: Path, new_tier: str) -> str:
 
 
 def main(argv: list[str]) -> int:
+    _force_utf8_streams()
     parser = argparse.ArgumentParser(
         description="Insert/update tier sentinel in project-root CLAUDE.md."
     )

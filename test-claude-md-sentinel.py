@@ -31,6 +31,19 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 HELPER = PLUGIN_ROOT / "bin" / "claude-md-sentinel.py"
 
 
+def _force_utf8_streams() -> None:
+    """Same Windows cp1252 guard as the helper: this runner prints non-ASCII
+    paths/needles (Case 9), which crashes the default Windows console codec.
+    No-op on Linux/macOS where stdout is already UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 def make_fixture(parent: Path, name: str, initial_content: Optional[str]) -> Path:
     fix = parent / name
     fix.mkdir(parents=True, exist_ok=True)
@@ -46,6 +59,7 @@ def run_helper(cwd: Path, tier: str) -> tuple[int, str, str]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     return proc.returncode, proc.stdout, proc.stderr
@@ -204,7 +218,31 @@ def case_cross_machine_simulation(parent: Path) -> bool:
     return ok
 
 
+def case_non_ascii_path(parent: Path) -> bool:
+    """Case 9: project path with non-ASCII characters → no console-encoding crash.
+
+    Regression for the cp1252 UnicodeEncodeError on Windows: the helper prints
+    the resolved CLAUDE.md path to stdout, and when that path contains
+    characters outside Latin-1 (e.g. a Greek directory name) the default
+    Windows console/pipe codec raised UnicodeEncodeError before the fix in
+    _force_utf8_streams(). On Linux/macOS the path is already UTF-8 so this is
+    a no-op assertion; on Windows it exercises the exact crash site."""
+    print("\n== Case 9: non-ASCII project path (Windows cp1252 regression) ==")
+    fix = make_fixture(parent, "case9-Έξοδα-πελατών", None)
+    rc, stdout, stderr = run_helper(fix, "T3")
+    ok = True
+    ok &= rc == 0
+    if rc != 0:
+        print(f"  FAIL: helper exited {rc} on non-ASCII path; stderr: {stderr!r}")
+    ok &= assert_contains("action=created", stdout, "created")
+    ok &= assert_contains("non-ASCII path emitted intact", stdout, "Έξοδα-πελατών")
+    content = (fix / "CLAUDE.md").read_text(encoding="utf-8")
+    ok &= assert_eq("file content", content, "---\ntier: T3\n---\n")
+    return ok
+
+
 def main() -> int:
+    _force_utf8_streams()
     if not HELPER.is_file():
         print(f"FATAL: helper not found at {HELPER}", file=sys.stderr)
         return 2
@@ -220,6 +258,7 @@ def main() -> int:
             case_replace_bare_legacy(parent),
             case_invalid_tier(parent),
             case_cross_machine_simulation(parent),
+            case_non_ascii_path(parent),
         ]
     finally:
         shutil.rmtree(parent, ignore_errors=True)
