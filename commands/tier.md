@@ -1,5 +1,5 @@
 ---
-description: Display the current tier (no args) or override the tier for this session (with T0..T4 arg). At v0.5.0 (v4.1), asks at runtime whether ELEVATION applies to THIS chat only OR to the whole project; demotion preserves D-MET-62 both-scope semantics.
+description: Display the current tier (no args) or override the tier for this session (with T0..T4 arg). At v1.13.0, elevation is always sticky; both project tier floor AND `tier: T<N>` sentinel in project CLAUDE.md are written so the override survives across sessions and across machines (closes 1a + 1b). Demotion preserves D-MET-62 both-scope semantics.
 argument-hint: "[T0|T1|T2|T3|T4]"
 ---
 
@@ -16,15 +16,8 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
 2. Compare `$ARGUMENTS` (target) to the current effective tier and compute direction:
    - **Elevation** if target > current (e.g., current T2, `$ARGUMENTS` T3 or T4).
    - **Demotion or no-change** if target ≤ current.
-3. **Elevation case ONLY** — ask the operator the elevation-scope question (v0.5.0 OBS-MET-AH closure; replaces v0.4.0 implicit project-floor write for elevations). Emit verbatim and pause for the answer:
-   ```
-   Apply elevation to $ARGUMENTS:
-     (S) THIS session only — anchor rewrite; project floor unchanged.
-     (P) Whole project from now on — anchor rewrite + floor write; sticky across all future sessions of this project.
-   Reply S or P.
-   ```
-   For **demotion or no-change**, skip the prompt — D-MET-62 both-scope semantics apply (explicit setting writes both anchor and floor; no ASK).
-4. Acknowledge the override in your context: `Tier set to $ARGUMENTS for this session. Direction: <elevation|demotion|no-change>. Scope: <session|project>.` From this point on, follow the methodology rules for the requested tier.
+3. **v1.13.0: no elevation-scope question.** Elevation via explicit operator action is always project-sticky: both the project tier floor AND the `tier: T<N>` sentinel in project-root CLAUDE.md are written. This closes OBS-vcroe-elevation-not-sticky-01 (1a) and the multi-machine portability gap OBS-vcroe-floor-machine-local-01 (1b). If the operator wants a one-session-only tier change, use `/lower-tier` (without `--project`) AFTER the elevation, or simply do not invoke `/tier` for non-sticky decisions. Demotion or no-change paths via `/tier` continue to apply D-MET-62 both-scope semantics (explicit setting writes both anchor and floor; sentinel is also updated for consistency).
+4. Acknowledge the override in your context: `Tier set to $ARGUMENTS for this session AND for the project (sticky via floor + CLAUDE.md sentinel). Direction: <elevation|demotion|no-change>.` From this point on, follow the methodology rules for the requested tier. **From your VERY NEXT reply onward, prepend the first-line rule from the loaded slice (e.g., `Detected tier: $ARGUMENTS (S<x>/C<y>), <label>. Override with /vc-roe:tier <T0..T4> if wrong.`) to every assistant reply for the remainder of the session** (v1.13.0 closes 2; the first-line MUST rule was originally authored for SessionStart-time loading and did not previously apply on mid-session slice loads).
 5. **Load the methodology slice for the new tier into the active context (closes #1, v1.11.0).** The anchor-rewrite call in step 6 only updates what the heartbeat hook reads; the assistant's methodology slice was rendered at SessionStart and does not auto-refresh on a `/tier` override. Without this step the assistant keeps operating against the SessionStart-time slice (silent T-N gap, operator-invisible). Resolve the slice path via Bash (reuse the same plugin discovery pattern as step 6), then invoke the `Read` tool on the resolved path so the slice content becomes a `tool_result` in the active context:
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
@@ -52,11 +45,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
    [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
    [ -x "$PLUGIN_BIN" ] && bash "$PLUGIN_BIN" "$ARGUMENTS" || echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
    ```
-7. **Set the project tier floor**:
-   - **Elevation + operator answered `S`**: SKIP floor write. Floor unchanged.
-   - **Elevation + operator answered `P`**: write floor.
-   - **Demotion or no-change**: write floor (D-MET-62 both-scope semantics for explicit setting; preserves v4.0 / v0.4.0 behaviour).
-   When floor write applies, run:
+7. **Set the project tier floor (always; v1.13.0 sticky-on-explicit).** Any `/tier T<N>` invocation now writes the floor (closes 1a). Run:
    ```bash
    PROJ_DIRNAME=$(python -c 'import os, re; print(re.sub(r"[^A-Za-z0-9-]", "-", os.path.realpath(os.getcwd())))')  # OBS-MET-AJ
    PROJ_DIR="$HOME/.claude/projects/$PROJ_DIRNAME"
@@ -64,10 +53,23 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
    echo "$ARGUMENTS" > "$PROJ_DIR/methodology-tier-floor"
    echo "Project tier floor set to $ARGUMENTS at $PROJ_DIR/methodology-tier-floor (sticky across all future sessions of this project)."
    ```
-8. Disclose:
-   - **Elevation + S**: `Tier set to $ARGUMENTS for THIS SESSION ONLY. Project tier floor unchanged. Re-run /tier $ARGUMENTS and answer P if you want sticky behaviour, or rely on HWM auto-elevation when next-session auto-detection picks up the higher tier.`
-   - **Elevation + P**: `Tier set to $ARGUMENTS for this session AND project tier floor raised to $ARGUMENTS for all future sessions of this project. CLAUDE.md tier: sentinel remains the absolute override if present.`
-   - **Demotion or no-change**: `Tier set to $ARGUMENTS for this session AND project tier floor written (D-MET-62 explicit-setting semantic). CLAUDE.md tier: sentinel remains the absolute override if present.`
+8. **Write the `tier: T<N>` sentinel to project-root CLAUDE.md (always; v1.13.0 cross-machine portability).** Floor file is `~/.claude/projects/`-local cache; it does not git-sync. CLAUDE.md is git-committed, so the sentinel makes the override portable across all machines the project syncs to (closes 1b). Cross-platform helper at `bin/claude-md-sentinel.py` handles all six edit cases (insert into existing frontmatter, prepend new frontmatter, replace bare legacy `tier:` line, idempotent no-op, etc.):
+   ```bash
+   PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
+   [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
+   if [ -x "$PLUGIN_BIN" ]; then
+     PLUGIN_ROOT=$(dirname "$(dirname "$PLUGIN_BIN")")
+     SENTINEL_HELPER="$PLUGIN_ROOT/bin/claude-md-sentinel.py"
+     if [ -r "$SENTINEL_HELPER" ]; then
+       python "$SENTINEL_HELPER" "$ARGUMENTS"
+     else
+       echo "claude-md-sentinel.py not found at $SENTINEL_HELPER; CLAUDE.md sentinel NOT updated. Floor file written; in-session tier set; cross-machine portability not guaranteed."
+     fi
+   else
+     echo "Plugin root not resolvable; CLAUDE.md sentinel NOT updated. Floor file written; in-session tier set; cross-machine portability not guaranteed."
+   fi
+   ```
+9. Disclose: `Tier set to $ARGUMENTS for this session, project tier floor set to $ARGUMENTS, AND tier: $ARGUMENTS sentinel written to project-root CLAUDE.md (sticky across all future sessions of this project AND portable across all machines the repo syncs to). Direction: <elevation|demotion|no-change>. Commit the CLAUDE.md change to git to propagate the override to other machines.`
 
 If `$ARGUMENTS` is anything else:
 
