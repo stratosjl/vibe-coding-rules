@@ -57,7 +57,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.14.0"
+ROUTINE_VERSION = "1.14.1"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -388,7 +388,11 @@ def detect_write(tool_name: str, tool_input: Any) -> Optional[tuple[str, str]]:
         file_path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         if not file_path:
             return None
-        if WATCHED_PATH_RE.search(file_path):
+        # WATCHED_PATH_RE is written with POSIX `/` separators. On Windows the
+        # tool passes backslash paths, so normalize before matching or
+        # watched-path writer-promotion never fires there (git-mutation
+        # promotion is command-based and unaffected).
+        if WATCHED_PATH_RE.search(file_path.replace("\\", "/")):
             return ("watched-path", file_path)
         return None
     if tool_name == "Bash":

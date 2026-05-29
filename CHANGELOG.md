@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.14.1 - 2026-05-29
+
+Fixes the chat-claim / writer-lease subsystem on Windows. Two defects, both surfaced by running the v1.10.0 chat-claim regression suite on Windows, where it had been failing 31 of 85 checks:
+
+- **`hooks/post-tool-use.py` watched-path detection ignored Windows paths (production bug).** `WATCHED_PATH_RE` is written with POSIX `/` separators, and Claude Code passes backslash file paths on Windows, so `detect_write()` never matched a watched-path edit and writer-promotion silently never fired for file edits on Windows (git-mutation promotion was unaffected, being command-based). `detect_write()` now normalizes `\` to `/` before matching. No behaviour change on Linux/macOS, where forward-slash paths are untouched.
+- **`test-chat-claim.py` harness set only HOME (test bug).** The hooks resolve the claim path via `Path.home()`, which consults HOME on POSIX but USERPROFILE on Windows. The harness set only `env["HOME"]`, so on Windows the hook wrote claims under the real profile while the test looked under the tempdir, failing every claim assertion. The harness now sets both HOME and USERPROFILE to the fake home.
+
+Result: `test-chat-claim.py` is 90 pass / 0 fail on Windows with no UTF-8 or HOME overrides; the rest of the suite (sentinel 9/9, detection, heartbeat, audit-patterns) stays green.
+
+Version: seven constants bumped to 1.14.1 in lockstep.
+
+Linux completion gate: both fixes were verified on Windows only. The watched-path normalization is a no-op on Linux and the harness change is cross-platform, so Linux is expected to stay green, but a confirming run of the full suite on Linux is the completion step for this release, tracked alongside the v1.14.0 cp1252 Linux verification in the GitHub issue.
+
+What this does NOT change: hook logic beyond the separator normalization in `detect_write()`; the claim / writer-lease schema; tier detection; the cp1252 sentinel fix shipped in 1.14.0; any methodology-content.
+
 ## 1.14.0 - 2026-05-29
 
 Merges the `feat/v1.13.0-elevation-stickiness` line into `main` and ships the elevation-stickiness work as **1.14.0**. That branch was developed in parallel as a second `1.13.0` while `main` independently shipped the bounded project-brain snapshot as `1.13.0`; rather than rewrite the already-documented project-brain release, the elevation work takes the next minor. This release also carries a cross-platform fix for the new sentinel helper that surfaced the moment it ran against a non-ASCII project path on Windows.

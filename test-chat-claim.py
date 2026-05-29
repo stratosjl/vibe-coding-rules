@@ -140,6 +140,11 @@ def run_hook(hook_path: Path, event: dict[str, Any], home: Path,
              extra_env: Optional[dict[str, str]] = None) -> tuple[int, str, str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    # Path.home() consults HOME on POSIX but USERPROFILE on Windows (HOME is
+    # ignored there), so the hook subprocess must see the fake home under both
+    # names or the hook resolves claim_path() to the real profile while the
+    # test looks under the tempdir -- the 31-failure Windows divergence.
+    env["USERPROFILE"] = str(home)
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     if extra_env:
         env.update(extra_env)
