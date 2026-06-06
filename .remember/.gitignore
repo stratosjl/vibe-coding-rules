@@ -1,0 +1,6 @@
+# PUBLIC repo — session memory/handover content stays out by design; the
+# project's proprietary surface lives in its private companion repo (s51 D-47
+# split). Do NOT relax this to '!*.md' like private fold-pattern repos do.
+# Only this .gitignore itself is tracked so the protection travels.
+*
+!.gitignore
