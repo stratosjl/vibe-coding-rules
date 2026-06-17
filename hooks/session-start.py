@@ -1008,6 +1008,23 @@ def main() -> int:
     label = label_for(s, c, rules)
     slice_content = load_slice(tier)
 
+    # Optional machine-local SessionStart addon (extension point). An install
+    # that carries a private extension module at ~/.claude/vc-roe-addons may
+    # contribute an extra context block (e.g. infrastructure-specific session
+    # context) and a one-word trace state. Plain public installs have no such
+    # directory and skip this entirely. Fully fail-soft: any import or runtime
+    # issue degrades to an empty block and never affects session start.
+    addon_block, addon_state = "", "none"
+    try:
+        _addon_dir = Path.home() / ".claude" / "vc-roe-addons"
+        if _addon_dir.is_dir():
+            if str(_addon_dir) not in sys.path:
+                sys.path.insert(0, str(_addon_dir))
+            from vc_roe_local_addons import session_start_block  # type: ignore
+            addon_block, addon_state = session_start_block(detection, tier)
+    except Exception:
+        addon_block, addon_state = "", "error"
+
     # v1.3.0: chat-claim acquire (multi-chat-access protection per
     # OBS-vcroe-multi-chat-contamination-01). SessionStart writes a claim
     # file to the project memory dir; if a conflicting claim younger than
@@ -1072,6 +1089,7 @@ def main() -> int:
         f"{claim_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
         f"{slice_content}\n\n"
+        f"{addon_block}"
         f"## Tier detection trace\n"
         f"- effective_tier: {tier}\n"
         f"- scope: {s or 'n/a'}\n"
@@ -1085,6 +1103,7 @@ def main() -> int:
         f"- chat_claim_action: {claim_action}\n"
         f"- chat_claim_ttl_hours: {ttl_hours}\n"
         f"- publish_state: {publish_state_line}\n"
+        f"- resumption_audit: {addon_state}\n"
     )
 
     output = {
