@@ -4,6 +4,17 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.15.1 - 2026-06-18
+
+Fixes two pre-existing defects in the pre-publication audit harness that surfaced while verifying the 1.15.0 release on Windows. Both are tooling-only; no hook logic, schema, methodology-content, or public-contract change beyond the version field.
+
+- **`test-audit-patterns.py` failed on clean HEAD (`***REMOVED***` plural pattern).** `sanitize_to_literal()` only consumed a `?`/`*`/`+` quantifier when it trailed a bracket character class; a quantifier trailing a plain literal char (the optional plural `s` in `bin/audit-patterns.sh`'s DENY pattern) hit the unsupported-ERE-meta guard and raised, so the harness aborted before validating any pattern. The quantifier handling is now generalized: a `?`/`*`/`+` after a literal char consumes the quantifier (the single already-emitted copy satisfies all three; a quantifier with no preceding token is still rejected as malformed). The self-audit gate-hole check (the generated literal must not appear in the test's own source) is preserved — the fix comment is deliberately written to avoid embedding the literal. Result: `test-audit-patterns.py` is `OK (9 DENY + 8 WARN patterns verified, self-audit clean)`.
+- **`bin/publish-audit-combined.sh` invoked `python3` (broken on Windows).** Tool 5 called `python3` directly; on Windows `python3` resolves via `command -v` to the Microsoft Store app-execution alias stub, which prints nothing and fails on exec, so the combined gate mis-fired on Windows regardless of the test's actual result. The script now resolves a working interpreter once at startup: it probes `python3` then `python`, requiring real `Python X` version output (so the Store stub is rejected), and uses the resolved `$PY` for tool 5. Linux/macOS keep `python3` (probed first); Windows falls through to `python`.
+
+Version: `.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, and `HARNESS_VERSION` in `bin/publish-audit-combined.sh` bumped to `1.15.1` in lockstep. Seven version constants total.
+
+What this does NOT change: the audit DENY/WARN pattern set itself (`bin/audit-patterns.sh` is untouched — only the test that validates it and the harness that runs it); the SessionStart addon extension point shipped in 1.15.0; any hook behaviour; the public-contract surface beyond the version value. (Note: the `bin/*.sh` scripts carry CRLF line endings in a Windows working tree, which `shellcheck` flags as SC1017; this is a checkout artifact — git stores and ships LF — and is not addressed here.)
+
 ## 1.15.0 - 2026-06-18
 
 Adds a generic, fail-soft **machine-local SessionStart addon extension point**, so an operator can contribute machine-specific session context (infrastructure state, a private resumption audit, environment banners) without patching the public hook or shipping anything private into this repo. Minor-class semver: one new optional hook seam, no schema change, no change to any existing hook behaviour, lockstep version bump.

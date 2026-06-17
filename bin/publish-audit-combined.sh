@@ -48,8 +48,21 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
-HARNESS_VERSION="1.15.0"
+HARNESS_VERSION="1.15.1"
 VERBOSE=0
+
+# Resolve a Python interpreter that actually runs. On Windows, `python3`
+# resolves via `command -v` to the Microsoft Store app-execution alias stub,
+# which prints nothing and fails on exec, so a plain existence check is unsafe.
+# Probe each candidate by running --version and requiring real "Python X" output.
+# Linux/macOS keep `python3` (listed first); Windows falls through to `python`.
+PY=""
+for _cand in python3 python; do
+  if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version 2>&1 | grep -qi '^python [0-9]'; then
+    PY="$_cand"; break
+  fi
+done
+[ -n "$PY" ] || PY=python3  # last resort; surfaces a clear error downstream
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v|--verbose)
@@ -159,7 +172,7 @@ fi
 if [ "$VERBOSE" -eq 1 ]; then hdr "tool 5/6: test-audit-patterns.py"; fi
 if [ -r "$REPO_ROOT/test-audit-patterns.py" ]; then
   out=""
-  run_verbose_or_capture out python3 test-audit-patterns.py
+  run_verbose_or_capture out "$PY" test-audit-patterns.py
   rc=$?
   summary=$(printf '%s\n' "$out" | tail -1)
   if [ "$rc" -eq 0 ]; then

@@ -97,7 +97,19 @@ def sanitize_to_literal(pattern: str) -> str:
             i = j + 1
             if i < len(pattern) and pattern[i] in "*+?":
                 i += 1
-        elif ch in ("^", "$", "(", ")", "|", "*", "+", "?", "{"):
+        elif ch in ("*", "+", "?"):
+            # Quantifier applied to the preceding literal char (the bracket-class
+            # case is consumed above). The single copy already emitted satisfies
+            # all three: `?`/`*` make it optional (one occurrence still matches)
+            # and `+` requires at least one (which we have). A quantifier with no
+            # preceding token is malformed. This is what lets a pattern with an
+            # optional trailing literal char (e.g. a plural `s?`) sanitize.
+            if not out:
+                raise ValueError(
+                    f"Quantifier {ch!r} with no preceding token in {pattern!r}"
+                )
+            i += 1
+        elif ch in ("^", "$", "(", ")", "|", "{"):
             raise ValueError(
                 f"Pattern uses unsupported ERE meta {ch!r} in {pattern!r}; "
                 f"extend sanitize_to_literal."
