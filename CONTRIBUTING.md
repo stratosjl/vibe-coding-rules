@@ -57,6 +57,33 @@ The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_
 
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 
+## Optional machine-local SessionStart addon (extension point)
+
+Since v1.15.0 the SessionStart hook exposes a fail-soft extension point so an operator can contribute machine-local session context (infrastructure state, a private resumption audit, environment banners) **without** patching the public hook or shipping anything into this repo.
+
+The contract is intentionally tiny. At SessionStart, if the directory `~/.claude/vc-roe-addons` exists, the hook puts it on `sys.path` and calls:
+
+```python
+# ~/.claude/vc-roe-addons/vc_roe_local_addons.py
+def session_start_block(detection: dict, tier: str) -> tuple[str, str]:
+    """Return (block, state).
+
+    block: a Markdown string spliced into additionalContext immediately
+           before the "## Tier detection trace" section. Return "" to add
+           nothing. End multi-line blocks with a trailing blank line so the
+           following section stays separated.
+    state: a one-word trace token rendered on the `resumption_audit:` line
+           of the tier-detection trace (e.g. "clean", "drift", "stale").
+    """
+    return ("", "none")
+```
+
+- `detection` is the resolved tier-detection dict (keys include `tier`, `scope`, `crit`, `source`, `signals`, `project_root`); `tier` is the effective tier string.
+- The seam is **opt-in and machine-local**. This repo ships **no** `vc_roe_local_addons` module, and a plain install has no `~/.claude/vc-roe-addons` directory, so the seam is skipped entirely and `resumption_audit:` reads `none`.
+- It is **fully fail-soft**: any import or runtime error degrades to an empty block and `resumption_audit: error`, and never affects session start. This is covered by `test-session-start-addon.py`.
+
+This is the supported way to layer private behaviour onto SessionStart. The "Changes that depend on a private add-on layer being present at runtime" exclusion below still holds: the *hook* must work identically with the addon absent, which the fail-soft contract guarantees.
+
 ## Don't paste regulator-presentable claims into the public methodology slices
 
 The plugin's public slices (`methodology-content/T0.md` through `T4.md`) describe the SHAPE of methodology at each tier, not specific compliance regimes. If your contribution wants to add specific worked examples ("at firm X, the T4 close instantiates as Y"), keep that as your own private add-on layer, not a PR to this repo. The public version stays domain-agnostic so any operator at any firm can adopt it.

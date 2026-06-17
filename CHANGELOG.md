@@ -4,6 +4,22 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.15.0 - 2026-06-18
+
+Adds a generic, fail-soft **machine-local SessionStart addon extension point**, so an operator can contribute machine-specific session context (infrastructure state, a private resumption audit, environment banners) without patching the public hook or shipping anything private into this repo. Minor-class semver: one new optional hook seam, no schema change, no change to any existing hook behaviour, lockstep version bump.
+
+What ships:
+
+- **`hooks/session-start.py` extension point.** After tier detection and slice load, if the directory `~/.claude/vc-roe-addons` exists, the hook prepends it to `sys.path` and calls `vc_roe_local_addons.session_start_block(detection, tier) -> (block, state)`. `block` is a Markdown string spliced into `additionalContext` immediately before the `## Tier detection trace` section; `state` is a one-word token rendered on a new `- resumption_audit:` line of that trace. A plain public install has no such directory, so the seam is skipped and `resumption_audit:` reads `none`. The path is **fully fail-soft**: any import or runtime error degrades to an empty block and `resumption_audit: error`, and never affects session start. (The seam itself landed in commit `44aa761`; this release adds the test, the contract documentation, and the version bump that make it a public release.)
+- **`test-session-start-addon.py` (new).** Drives `session-start.py` as a subprocess against a fake HOME (HOME *and* USERPROFILE, per the v1.14.1 Windows divergence) across four branches: no addon dir → `none` + no block; working addon → block present, ordered before the trace, state echoed verbatim; addon raises → `error` + no block + session intact; addon dir present but module missing → `error` (ImportError). 14/14 pass on Windows with no UTF-8 or HOME overrides.
+- **`CONTRIBUTING.md` addon-contract section.** Documents `session_start_block(detection, tier) -> (block, state)` as a supported public extension point: opt-in, machine-local, this repo ships no `vc_roe_local_addons` module, and the hook must work identically with the addon absent (which the fail-soft contract guarantees). Reconciles the seam with the existing "no runtime dependency on a private add-on layer" contribution rule.
+
+Why a public seam with a private payload: the extension-point *code* is generic and carries nothing confidential — it is "if this directory exists, call this function." The actual addon *module* lives in the operator's machine-local companion at `~/.claude/vc-roe-addons` and never enters the public tree. This is the same public-tool / private-content split the repo already applies to memory (`d8561ab`). Documenting the contract as a public API means any external adopter of vc-roe can write their own SessionStart addon, rather than reading a `from vc_roe_local_addons import ...` line in the hook source and mistaking the optional seam for a missing dependency.
+
+Version: `.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks (`session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, `session-end.py`), and `HARNESS_VERSION` in `bin/publish-audit-combined.sh` bumped to `1.15.0` in lockstep. Seven version constants total.
+
+What this does NOT change: tier-detection logic and precedence (sentinel beats floor beats auto); the chat-claim / writer-lease subsystem; heartbeat cadence; the silent-stop/thinking guard; `detection-rules.json`; `methodology-content/*`; the `SessionStart` `additionalContext` shape beyond the optional addon block and the one new `resumption_audit:` trace line; the public-contract surface beyond the version value. The seam is inert on any install without `~/.claude/vc-roe-addons`.
+
 ## 1.14.1 - 2026-05-29
 
 Fixes the chat-claim / writer-lease subsystem on Windows. Two defects, both surfaced by running the v1.10.0 chat-claim regression suite on Windows, where it had been failing 31 of 85 checks:

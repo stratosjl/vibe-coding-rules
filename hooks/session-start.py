@@ -74,7 +74,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.14.1"
+ROUTINE_VERSION = "1.15.0"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows; macOS gap documented in README "Platform coverage notes"
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
