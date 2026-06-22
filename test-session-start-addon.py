@@ -9,7 +9,7 @@ it on sys.path and calls
     vc_roe_local_addons.session_start_block(detection, tier) -> (block, state)
 
 contributing `block` (an extra additionalContext section) and `state` (a
-one-word trace rendered on the `resumption_audit:` line). Plain public installs
+one-word trace rendered on the `session_start_addon:` line). Plain public installs
 have no such directory and skip it; any import/runtime error degrades to an
 empty block and the literal state `error`, and never affects session start.
 
@@ -142,7 +142,7 @@ def main() -> int:
         rc, out, ctx = run_session_start(home, cwd)
         check(rc == 0, "C1 hook exits 0")
         check(bool(ctx), "C1 emits additionalContext")
-        check("- resumption_audit: none" in ctx, "C1 resumption_audit: none")
+        check("- session_start_addon: none" in ctx, "C1 session_start_addon: none")
         check("ADDON-MARKER" not in ctx, "C1 no addon block leaked")
 
         # Case 2: working addon -> block present, before trace, state echoed.
@@ -152,7 +152,7 @@ def main() -> int:
         rc, out, ctx = run_session_start(home, cwd)
         check(rc == 0, "C2 hook exits 0")
         check("ADDON-MARKER-XYZ" in ctx, "C2 addon block present")
-        check("- resumption_audit: clean" in ctx, "C2 state echoed (clean)")
+        check("- session_start_addon: clean" in ctx, "C2 state echoed (clean)")
         # Block must sit before the tier-detection trace section.
         i_block = ctx.find("ADDON-MARKER-XYZ")
         i_trace = ctx.find("## Tier detection trace")
@@ -168,7 +168,7 @@ def main() -> int:
         rc, out, ctx = run_session_start(home, cwd)
         check(rc == 0, "C3 hook exits 0 (fail-soft)")
         check(bool(ctx), "C3 session start unaffected (context emitted)")
-        check("- resumption_audit: error" in ctx, "C3 resumption_audit: error")
+        check("- session_start_addon: error" in ctx, "C3 session_start_addon: error")
         check("ADDON-MARKER" not in ctx, "C3 no partial block leaked")
 
         # Case 4: addon dir exists but module missing -> ImportError -> 'error'.
@@ -177,7 +177,7 @@ def main() -> int:
         cwd = make_cwd(tmp, "c4")
         rc, out, ctx = run_session_start(home, cwd)
         check(rc == 0, "C4 hook exits 0 (fail-soft)")
-        check("- resumption_audit: error" in ctx, "C4 resumption_audit: error")
+        check("- session_start_addon: error" in ctx, "C4 session_start_addon: error")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

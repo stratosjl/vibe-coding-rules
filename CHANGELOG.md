@@ -4,6 +4,40 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.17.0 - 2026-06-18
+
+Extends the **source-of-truth chain** (T3 item 12, inherited by T4) with a seventh clause on availability replicas and cross-***REMOVED*** offsite encryption. Operator directive 2026-06-18. Methodology-content-only change; no hook logic, detection, or enforcement surface is touched.
+
+What this ships:
+
+- **`methodology-content/T3.md` item 12 clause 7 (item now seven clauses).** (7a) Availability replicas of a ***REMOVED*** project's canonical forge are READ-ONLY pull mirrors, never active-active — a second writable forge for one project split-brains into divergent histories; a replica becomes canonical only by a deliberate act during a declared outage, with the old canonical demoted in the same step. (7b) Any offsite DR leg that lands OUTSIDE the project's jurisdictional ***REMOVED*** (e.g. a consumer cloud engaging ***REMOVED***-II-class transfer constraints) is client-side encrypted before it crosses the boundary — only ciphertext crosses, asymmetric encryption preferred (encrypt-only recipient on the producer, decryption key custodied separately), refreshed on clause 3's cadence, restore-path tested at least once before the backup is trusted.
+- **`methodology-content/T4.md` inherited-T3 line** extended to name clause 7.
+- Provenance: authored from an EU-***REMOVED*** project's forge migration (operator directive 2026-06-18). The worked instance that surfaced both constraints ran a read-only localhost replica of an EU-resident canonical forge plus an `age`-encrypted DR bundle on a US-hosted consumer cloud; project-specific provenance is kept in the operator's private governance trail, not here.
+
+Version: seven constants bumped to 1.17.0 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`).
+
+What this does NOT change: all hook logic (session-start resumption audit, heartbeat, chat-claim, stop sentinel, detection precedence/scoring); the publish-audit DENY/WARN pattern set; `detection-rules.json`; existing T3 items 1-11 and item 12 clauses 1-6; the T4 added-at-T4 section. The public-contract surface change is the additive clause 7 text and the version value only.
+
+## 1.16.0 - 2026-06-07
+
+Adds the **source-of-truth chain + ***REMOVED***-aware sync** requirement (T3 item 12, inherited by T4) and its hook-grade enforcement: a **resumption audit** rendered by SessionStart for every T3+ project before work begins. Operator directive 2026-06-06.
+
+What this ships:
+
+- **`methodology-content/T3.md` new item 12 (six clauses).** (1) Forge remote canonical, working folder is the working surface; (2) resumption audit before work, divergence is an operator decision point; (3) close-time commit+push plus portable-copy refresh; (4) private-by-default; (5) ***REMOVED***-restricted projects swap the hosted forge for a self-hosted local forge (***REMOVED***-class), marked by a `***REMOVED***:` sentinel in project-root CLAUDE.md frontmatter (same mechanism as the `tier:` sentinel); (6) local-forge projects ferry git history between machines as a single-file `git bundle` inside the portable copy, with REVIEWED two-way sync on resumption. `T4.md` inherited-T3 line extended accordingly (also adds the previously missing deferral-closure-date clause to that summary line).
+- **Resumption audit in `hooks/session-start.py`.** New `resumption_audit_block()` plus helpers (`find_***REMOVED***_in_claude_md`, `read_***REMOVED***`, `_git`, `_git_rc`, `_classify_remote`, `_bundle_state`). For T3/T4 the audit block lands in additionalContext between the slice and the detection trace: forge remote (classified hosted/local-forge), uncommitted count, ahead/behind vs local origin refs with FETCH_HEAD staleness (the audit NEVER fetches over the network inside a hook — a weekend-unreachable local forge must not delay session open), and for `***REMOVED***:` projects the portable-bundle state (missing / in-sync / local-ahead / bundle-ahead / diverged via `git bundle list-heads` + `merge-base --is-ancestor`). Verdict line marks divergence as an operator decision point. All git calls carry a 3 s hard timeout; the whole audit is fail-soft (degrades to a one-line note, never blocks session start). New trace line `resumption_audit:` and log field. Below T3 the audit is skipped entirely.
+- **Machine-local config `~/.claude/***REMOVED***`** (key `***REMOVED***`) tells the audit where the portable-backup surface lives. Plugin content never hardcodes operator paths; missing config degrades to a visible "bundle state unknown" line.
+- **`hooks/hooks.json` SessionStart timeout 10 → 20 s** to budget the audit's local git probes.
+- **`test-resumption-audit.py`** (new, 18 cases): tier gating, no-repo, clean/dirty, remote classification, ***REMOVED*** sentinel reading, missing config, bundle missing / in-sync / local-ahead / bundle-ahead.
+
+Version: seven constants bumped to 1.16.0 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`).
+
+Verification: new suite 18/18; full regression floor green on Linux (detection exit 0 all-OK, heartbeat 0/11 misses, chat-claim 93/0, claude-md-sentinel 9/9, audit-patterns self-audit clean). Windows run of the new suite is the follow-up verification step, consistent with the 1.14.x cross-platform cadence.
+
+Operator-side context (not shipped here): the operator's portable-mirror script builds `<name>.git.bundle` for `***REMOVED***:`-sentinel projects and excludes raw `.git/` from the portable mirror; the operator's global instantiation of item 12 was rewritten the same day. Origin incident: raw `.git` small-file churn through an rclone VFS write-back mount caused a mount crash-loop on 2026-06-06; the bundle transport removes that failure mode while keeping git-history DR for projects whose canonical forge is machine-local.
+
+What this does NOT change: tier-detection precedence and scoring; chat-claim / writer-lease semantics; heartbeat-cadence semantics; anchor / floor / sentinel mechanics; the publish-audit DENY/WARN pattern set; `detection-rules.json`; existing T3 items 1-11 and the T4 added-at-T4 section; the public-contract surface beyond the version value and the new additive audit block in additionalContext.
+
 ## 1.15.1 - 2026-06-18
 
 Fixes two pre-existing defects in the pre-publication audit harness that surfaced while verifying the 1.15.0 release on Windows. Both are tooling-only; no hook logic, schema, methodology-content, or public-contract change beyond the version field.
