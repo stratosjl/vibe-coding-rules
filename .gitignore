@@ -25,3 +25,5 @@ Thumbs.db
 .env.*
 private/
 local-addon/
+# operator-private addon; never commit to this public repo
+methodology-content/residency-routing.md
