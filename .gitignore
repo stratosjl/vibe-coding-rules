@@ -27,3 +27,6 @@ private/
 local-addon/
 # operator-private addon; never commit to this public repo
 methodology-content/residency-routing.md
+
+# operator-private per-project memory - never publish to this public repo (restored after v1.17.0 regression)
+memory/
