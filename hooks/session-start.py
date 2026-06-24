@@ -113,19 +113,6 @@ DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 PUBLISH_STATE_PATH = Path.home() / ".claude" / "vc-roe-publish-state.json"
 PUBLISH_STATE_STALE_MINUTES = 65  # 30 min cadence + 35 min grace
 
-# v1.15.0: resumption audit (T3 item 12, source-of-truth chain + ***REMOVED***-aware
-# sync; operator directive 2026-06-06). For T3+ projects, SessionStart renders
-# a forge/working-folder sync audit BEFORE work begins: uncommitted count,
-# ahead/behind upstream (local refs only — NO network fetch in a hook;
-# staleness shown from FETCH_HEAD mtime), and — for `***REMOVED***:`-sentinel
-# local-forge projects — the portable-copy bundle state. Read-only; any
-# divergence is an operator decision point, never auto-resolved by the
-# assistant. The portable-copy root comes from machine-local config
-# ~/.claude/***REMOVED*** {"***REMOVED***": "..."} so plugin content
-# never hardcodes an operator path.
-LOCAL_CONFIG_PATH = Path.home() / ".claude" / "***REMOVED***"
-GIT_TIMEOUT_SECONDS = 3
-
 
 def load_rules() -> dict[str, Any]:
     with open(DETECTION_RULES_PATH, "r", encoding="utf-8") as f:
@@ -915,190 +902,6 @@ def format_publish_state(state: Optional[dict[str, Any]], now: int) -> str:
     return f"clean as of T-{age_min}m ({warn} WARN, history clean)"
 
 
-def find_***REMOVED***_in_claude_md(claude_md: Optional[Path]) -> Optional[str]:
-    """v1.15.0: `***REMOVED***: <value>` sentinel in project-root CLAUDE.md.
-
-    Same mechanism as the `tier:` sentinel (git-committed, machine-portable).
-    Returns the lowercased value (e.g. "***REMOVED***") or None.
-    """
-    if not claude_md or not claude_md.is_file():
-        return None
-    try:
-        text = claude_md.read_text(encoding="utf-8")
-    except Exception:
-        return None
-    m = re.search(r"^\s****REMOVED***:\s*([A-Za-z0-9_-]+)\b", text,
-                  re.MULTILINE | re.IGNORECASE)
-    return m.group(1).lower() if m else None
-
-
-def read_***REMOVED***() -> Optional[Path]:
-    """v1.15.0: machine-local portable-copy root from ~/.claude/***REMOVED***."""
-    try:
-        with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        root = cfg.get("***REMOVED***")
-        return Path(root) if isinstance(root, str) and root else None
-    except Exception:
-        return None
-
-
-def _git(project_root: Path, *args: str) -> Optional[str]:
-    """Run git in project_root with a hard timeout. None on any failure.
-
-    Local-only commands by design: the audit NEVER fetches over the network
-    inside a SessionStart hook (a weekend-unreachable local forge must not
-    delay session open).
-    """
-    try:
-        res = subprocess.run(
-            ["git", "-C", str(project_root), *args],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
-        )
-        return res.stdout.strip() if res.returncode == 0 else None
-    except Exception:
-        return None
-
-
-def _git_rc(project_root: Path, *args: str) -> Optional[int]:
-    """Like _git but returns the exit code (for boolean probes like
-    merge-base --is-ancestor where rc=1 is a valid answer, not an error)."""
-    try:
-        res = subprocess.run(
-            ["git", "-C", str(project_root), *args],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
-        )
-        return res.returncode
-    except Exception:
-        return None
-
-
-def _classify_remote(url: str) -> str:
-    low = url.lower()
-    if "github.com" in low:
-        return "hosted forge (github)"
-    if ("localhost" in low or "127.0.0.1" in low or "***REMOVED***" in low
-            or low.startswith("http://192.168.") or low.startswith("git@192.168.")):
-        return "local forge (***REMOVED***-class)"
-    return "hosted forge (other)"
-
-
-def _bundle_state(project_root: Path, bundle: Path) -> str:
-    """Compare portable-copy bundle tip against local HEAD. Render verdict."""
-    if not bundle.is_file():
-        return f"bundle MISSING at {bundle} — portable copy carries no git history yet"
-    heads = _git(project_root, "bundle", "list-heads", str(bundle))
-    if heads is None:
-        return f"bundle unreadable at {bundle} (timeout or corrupt)"
-    tip = None
-    for line in heads.splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            tip = parts[0]
-            if parts[1] == "HEAD":
-                break
-    if not tip:
-        return f"bundle at {bundle} lists no heads"
-    local_head = _git(project_root, "rev-parse", "HEAD")
-    if not local_head:
-        return "local HEAD unresolvable"
-    if tip == local_head:
-        return "bundle == local HEAD (in sync)"
-    if _git_rc(project_root, "cat-file", "-e", f"{tip}^{{commit}}") != 0:
-        return (f"bundle tip {tip[:8]} unknown to this clone — bundle is ahead or "
-                f"diverged; REVIEWED two-way sync required (git fetch {bundle})")
-    if _git_rc(project_root, "merge-base", "--is-ancestor", tip, local_head) == 0:
-        return f"local is AHEAD of bundle (bundle tip {tip[:8]}) — refresh bundle at close"
-    if _git_rc(project_root, "merge-base", "--is-ancestor", local_head, tip) == 0:
-        return (f"bundle is AHEAD of local (bundle tip {tip[:8]}) — REVIEWED two-way "
-                f"sync required before work (git fetch {bundle})")
-    return (f"DIVERGED (bundle tip {tip[:8]} vs local {local_head[:8]}) — operator "
-            f"review required before any work")
-
-
-def resumption_audit_block(project_root: Optional[Path], tier: str,
-                           git_root_found: bool) -> tuple[str, str]:
-    """v1.15.0 (T3 item 12 clause 2): render the resumption audit for T3+.
-
-    Returns (rendered markdown block, one-word trace state). Empty block below
-    T3. Read-only, local-only, fail-soft: any internal surprise degrades to a
-    visible one-line note rather than blocking session start.
-    """
-    if tier not in ("T3", "T4"):
-        return "", "skipped-below-T3"
-    if not git_root_found or project_root is None:
-        return (
-            "## Resumption audit (T3 item 12: source-of-truth chain)\n"
-            "- NO git repository at project root. T3+ requires a canonical "
-            "forge remote (clause 1); bootstrap the repo before substantive "
-            "work, or confirm with the operator why this project is exempt.\n\n",
-            "no-repo",
-        )
-    root = project_root
-    lines = ["## Resumption audit (T3 item 12: source-of-truth chain)"]
-    diverged = False
-
-    remote = _git(root, "remote", "get-url", "origin")
-    ***REMOVED*** = find_***REMOVED***_in_claude_md(root / "CLAUDE.md")
-    if remote:
-        lines.append(f"- forge remote: {remote} [{_classify_remote(remote)}]")
-    elif ***REMOVED***:
-        lines.append(f"- forge remote: none configured (***REMOVED*** `{***REMOVED***}` — "
-                     f"local forge may be pending deployment on this machine)")
-    else:
-        lines.append("- forge remote: NONE — clause 1 violation at T3+; "
-                     "surface to operator before work")
-        diverged = True
-
-    porcelain = _git(root, "status", "--porcelain")
-    n_unc = len(porcelain.splitlines()) if porcelain else 0
-    lines.append(f"- working tree: {n_unc} uncommitted change(s)")
-    if n_unc:
-        diverged = True
-
-    lr = _git(root, "rev-list", "--count", "--left-right", "@{u}...HEAD")
-    if lr:
-        try:
-            behind, ahead = (int(x) for x in lr.split())
-        except Exception:
-            behind = ahead = -1
-        fetch_head = root / ".git" / "FETCH_HEAD"
-        try:
-            age_h = (time.time() - fetch_head.stat().st_mtime) / 3600.0
-            staleness = f"last fetch ~{age_h:.0f}h ago"
-        except Exception:
-            staleness = "never fetched in this clone"
-        lines.append(f"- upstream: ahead {ahead} / behind {behind} vs local "
-                     f"origin refs ({staleness}; audit does not fetch)")
-        if ahead or behind:
-            diverged = True
-    elif remote:
-        lines.append("- upstream: not comparable (no upstream tracking ref)")
-
-    if ***REMOVED***:
-        proot = read_***REMOVED***()
-        if proot:
-            bundle = proot / root.name / f"{root.name}.git.bundle"
-            state = _bundle_state(root, bundle)
-            lines.append(f"- ***REMOVED*** `{***REMOVED***}` bundle: {state}")
-            if "in sync" not in state:
-                diverged = True
-        else:
-            lines.append(f"- ***REMOVED*** `{***REMOVED***}`: ***REMOVED*** not configured "
-                         f"in {LOCAL_CONFIG_PATH} — bundle state unknown")
-            diverged = True
-
-    if diverged:
-        lines.append("- verdict: DIVERGENCE PRESENT → surface the lines above to "
-                     "the operator and agree sync direction BEFORE starting work "
-                     "(clause 2). Do NOT silently pull, push, or overwrite.")
-        state_word = "diverged"
-    else:
-        lines.append("- verdict: in sync (forge ↔ working folder)")
-        state_word = "clean"
-    return "\n".join(lines) + "\n\n", state_word
-
-
 def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str) -> None:
     """Heartbeat-enforcement anchor (D-MET-39, v0.1.7).
 
@@ -1205,21 +1008,6 @@ def main() -> int:
     label = label_for(s, c, rules)
     slice_content = load_slice(tier)
 
-    # v1.16.0: resumption audit (T3 item 12 clause 2) — forge/working-folder
-    # sync state rendered before work begins. Fail-soft: never blocks start.
-    audit_block, audit_state = "", "skipped-error"
-    try:
-        proot_str = detection.get("project_root")
-        audit_block, audit_state = resumption_audit_block(
-            Path(proot_str) if proot_str else None,
-            tier,
-            bool(detection.get("git_root_found")),
-        )
-    except Exception as e:
-        append_log({"ts": time.time(), "phase": "resumption_audit",
-                    "error": str(e)})
-        audit_state = f"error:{e.__class__.__name__}"
-
     # Optional machine-local SessionStart addon (extension point). An install
     # that carries a private extension module at ~/.claude/vc-roe-addons may
     # contribute an extra context block (e.g. infrastructure-specific session
@@ -1301,7 +1089,6 @@ def main() -> int:
         f"{claim_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
         f"{slice_content}\n\n"
-        f"{audit_block}"
         f"{addon_block}"
         f"## Tier detection trace\n"
         f"- effective_tier: {tier}\n"
@@ -1316,7 +1103,6 @@ def main() -> int:
         f"- chat_claim_action: {claim_action}\n"
         f"- chat_claim_ttl_hours: {ttl_hours}\n"
         f"- publish_state: {publish_state_line}\n"
-        f"- resumption_audit: {audit_state}\n"
         f"- session_start_addon: {addon_state}\n"
     )
 
@@ -1354,7 +1140,6 @@ def main() -> int:
         "chat_claim_action": claim_action,
         "chat_claim_info": claim_info,
         "chat_claim_ttl_hours": ttl_hours,
-        "resumption_audit": audit_state,
     })
     return 0
 

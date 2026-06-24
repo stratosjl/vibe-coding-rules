@@ -5,7 +5,7 @@
 # pre-push hook would resolve consistently. That redirect is complete: it
 # also bypasses the per-clone `.git/hooks/` directory for every other
 # event. On machines where the operator has installed local post-* hooks
-# (e.g. the working tree mirror-sync to ***REMOVED***), those went silently
+# (e.g. a working-tree mirror-sync to a cloud backup surface), those went silently
 # inert from v1.8.0 onward (OBS-vcroe-post-commit-sync-log-gap-01).
 #
 # This dispatcher forwards to the operator-local `.git/hooks/post-commit`

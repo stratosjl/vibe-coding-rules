@@ -90,7 +90,7 @@ WATCHED_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # (handovers/, decisions.md, open-issues.md, hooks/, bin/, plugin.json) plus
 # the v1.8.0 .githooks/ sibling and the T4-close CHANGELOG.md + methodology
 # slices. Substring-anywhere rather than cwd-prefix to handle the vc-roe
-# split-tree setup where the cwd (***REMOVED*** bundle) and the working tree
+# split-tree setup where the cwd (a cloud-synced bundle) and the working tree
 # (~/Projects/...) are separate paths but both are part of the same project
 # surface from the operator's perspective.
 WATCHED_PATH_RE = re.compile(

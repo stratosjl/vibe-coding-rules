@@ -5,7 +5,7 @@
 # public repo. Scans for common leak patterns:
 #
 #   - Personal/employer email addresses other than the public author email
-#   - Hard-coded operator-private paths (/home/<user>/Cloud/, ***REMOVED***/, etc)
+#   - Hard-coded operator-private paths (/home/<user>/Cloud/, cloud-sync folders, etc)
 #   - References to internal-firm names or private projects
 #   - Internal decision-ID prefixes that may leak project structure
 #
