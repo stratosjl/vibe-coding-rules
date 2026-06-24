@@ -4,6 +4,20 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.18.1 - 2026-06-24
+
+Hardening release: makes the pre-push publish-audit gate **self-arming** inside the vibe-coding-rules clone.
+
+The gate is activated per-clone by `git config --local core.hooksPath .githooks` (`bin/install-hooks.sh`). That setting is local config and does not travel with a fresh clone, so a new clone or machine silently reverts to the un-gated state until the operator re-runs the bootstrap by hand. SessionStart now detects that exact state and re-sets `core.hooksPath` automatically.
+
+- `hooks/session-start.py`: new `ensure_pre_push_gate_armed(cwd)`. Scoped to THIS repo only — fires solely when the cwd's git root carries both `.githooks/pre-push` and `bin/install-hooks.sh`; a silent no-op (`pre_push_gate: n/a`) in any project that merely installs the plugin. Fully fail-soft: any error degrades to a trace token and never affects session start. The executable bit on `.githooks/pre-push` is tracked in-repo (mode 100755), so a fresh clone already has it and only `core.hooksPath` needs setting (done directly via git, no bash dependency). A new `pre_push_gate:` trace line (`armed` / `re-armed` / `rearm-failed` / `n/a`) is added to the SessionStart tier-detection trace, and a one-line WARNING banner surfaces on re-arm or failure.
+- `CONTRIBUTING.md`: the lockstep version-bump checklist now lists all **seven** constants (the audit harness's `HARNESS_VERSION` was historically omitted from the list while the per-release CHANGELOG entries already counted seven).
+- `test-pre-push-gate-guard.py`: new standalone test covering armed / unset→re-armed / not-this-repo / fail-soft paths.
+
+Version: seven constants bumped to 1.18.1 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`).
+
+What this does NOT change: tier-detection precedence and scoring; the publish-audit DENY/WARN pattern set; `detection-rules.json`; the methodology slices; the SessionStart `additionalContext` shape beyond the added `pre_push_gate:` trace line and the conditional re-arm banner.
+
 ## 1.18.0 - 2026-06-24
 
 Maintenance / version-marker release. Confirms the public methodology's **source-of-truth chain** (T3 item 12, inherited by T4) as fully provider-agnostic: forge-canonical, reconcile-before-work, close-time push, private-by-default. Any infrastructure-specific residency or disaster-recovery routing is delivered through the v1.15.0 machine-local SessionStart addon seam and is not shipped in this repo.

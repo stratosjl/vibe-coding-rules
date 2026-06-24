@@ -52,8 +52,9 @@ bump these values in lockstep:
 4. `hooks/post-tool-use.py` → `ROUTINE_VERSION`
 5. `hooks/stop.py` → `ROUTINE_VERSION`
 6. `hooks/session-end.py` → `ROUTINE_VERSION`
+7. `bin/publish-audit-combined.sh` → `HARNESS_VERSION`
 
-The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants are mirrors that travel with the hook code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all six.
+The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants and the audit harness's `HARNESS_VERSION` are mirrors that travel with the hook/harness code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all seven. (This is the "7-constant lockstep"; the harness version was the seventh, historically omitted from this list per OBS-AUD-4.)
 
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 

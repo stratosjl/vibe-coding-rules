@@ -74,7 +74,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.18.0"
+ROUTINE_VERSION = "1.18.1"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows; macOS gap documented in README "Platform coverage notes"
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
@@ -674,6 +674,72 @@ def is_in_git_worktree(cwd: Path) -> bool:
         return False
 
 
+def ensure_pre_push_gate_armed(cwd: Path) -> str:
+    """Self-heal the pre-push publish-audit gate when the session runs inside
+    the vibe-coding-rules working tree itself.
+
+    The gate is armed per-clone by `git config --local core.hooksPath
+    .githooks` (bin/install-hooks.sh). That is LOCAL config: it does not
+    travel with a fresh clone, so a new clone or machine silently reverts to
+    the un-gated state that let the v1.16/v1.17 residency leak ship past the
+    pre-push audit (OBS-AUD-2, audit-pass-discharge-2026-06-24). To make the
+    gate self-arming, detect that exact state at SessionStart and re-set it.
+
+    Scoped to THIS repo ONLY: fires solely when the cwd's git root carries
+    BOTH `.githooks/pre-push` and `bin/install-hooks.sh` (i.e. it IS the
+    vibe-coding-rules clone). For any project that merely installs the plugin
+    this is a silent no-op returning "n/a" — no global nag.
+
+    The executable bit on `.githooks/pre-push` is tracked in-repo (mode
+    100755), so a fresh clone already has it; the only missing piece is
+    core.hooksPath, set here directly via git (no bash dependency).
+
+    Fully fail-soft: any error degrades to a trace token and never affects
+    session start. Returns one of: "n/a" (not this repo / undetectable),
+    "armed" (already correct), "re-armed" (was unset/wrong, now fixed),
+    "rearm-failed" (gap detected but could not set it).
+    """
+    try:
+        git_root = find_git_root(cwd, max_levels=6)
+        if git_root is None:
+            return "n/a"
+        if not (
+            (git_root / ".githooks" / "pre-push").is_file()
+            and (git_root / "bin" / "install-hooks.sh").is_file()
+        ):
+            return "n/a"
+        try:
+            cur = subprocess.run(
+                ["git", "-C", str(git_root), "config", "--local",
+                 "--get", "core.hooksPath"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return "n/a"
+        current = cur.stdout.strip() if cur.returncode == 0 else ""
+        if current == ".githooks":
+            return "armed"
+        # Bypass state: the publish-audit gate is inert. Re-arm it.
+        try:
+            subprocess.run(
+                ["git", "-C", str(git_root), "config", "--local",
+                 "core.hooksPath", ".githooks"],
+                capture_output=True, text=True, timeout=5,
+            )
+            verify = subprocess.run(
+                ["git", "-C", str(git_root), "config", "--local",
+                 "--get", "core.hooksPath"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return "rearm-failed"
+        if verify.returncode == 0 and verify.stdout.strip() == ".githooks":
+            return "re-armed"
+        return "rearm-failed"
+    except Exception:
+        return "n/a"
+
+
 def evaluate_claim(claim: Optional[dict[str, Any]], current_session: str,
                    now: int, ttl_hours: float, our_host: str,
                    our_boot_id: str) -> tuple[str, dict[str, Any]]:
@@ -1085,8 +1151,27 @@ def main() -> int:
     # v1.4.0: publish-state broadcast read (OBS-vcroe-coordination-cron-broadcast-01).
     publish_state = read_publish_state()
     publish_state_line = format_publish_state(publish_state, int(started))
+    # v1.18.1 (OBS-AUD-2): self-heal the pre-push publish-audit gate when this
+    # session is inside the vibe-coding-rules clone. core.hooksPath is per-clone
+    # and does not travel; a fresh clone reverts to the un-gated state that
+    # shipped the v1.16/v1.17 residency leak. No-op ("n/a") in any other repo.
+    gate_state = ensure_pre_push_gate_armed(cwd)
+    gate_banner_text = ""
+    if gate_state == "re-armed":
+        gate_banner_text = (
+            "> WARNING: the vc-roe pre-push publish-audit gate was INERT "
+            "(core.hooksPath was unset) and has been re-armed automatically. "
+            "Your next `git push` from this clone is now gated (OBS-AUD-2).\n\n"
+        )
+    elif gate_state == "rearm-failed":
+        gate_banner_text = (
+            "> WARNING: the vc-roe pre-push publish-audit gate is INERT "
+            "(core.hooksPath unset) and automatic re-arm FAILED. Run "
+            "`bash bin/install-hooks.sh` before your next push (OBS-AUD-2).\n\n"
+        )
     additional = (
         f"{claim_banner_text}"
+        f"{gate_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
         f"{slice_content}\n\n"
         f"{addon_block}"
@@ -1103,6 +1188,7 @@ def main() -> int:
         f"- chat_claim_action: {claim_action}\n"
         f"- chat_claim_ttl_hours: {ttl_hours}\n"
         f"- publish_state: {publish_state_line}\n"
+        f"- pre_push_gate: {gate_state}\n"
         f"- session_start_addon: {addon_state}\n"
     )
 
@@ -1140,6 +1226,7 @@ def main() -> int:
         "chat_claim_action": claim_action,
         "chat_claim_info": claim_info,
         "chat_claim_ttl_hours": ttl_hours,
+        "pre_push_gate": gate_state,
     })
     return 0
 
