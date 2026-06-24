@@ -4,6 +4,14 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.18.0 - 2026-06-24
+
+Maintenance / version-marker release. Confirms the public methodology's **source-of-truth chain** (T3 item 12, inherited by T4) as fully provider-agnostic: forge-canonical, reconcile-before-work, close-time push, private-by-default. Any infrastructure-specific residency or disaster-recovery routing is delivered through the v1.15.0 machine-local SessionStart addon seam and is not shipped in this repo.
+
+Version: seven constants bumped to 1.18.0 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`).
+
+What this does NOT change: all hook logic; tier-detection precedence and scoring; the publish-audit DENY/WARN pattern set; `detection-rules.json`; the SessionStart `additionalContext` shape; the public-contract surface beyond the version value.
+
 ## 1.17.0 - 2026-06-18
 
 Refines operator-machine-local resumption-audit / disaster-recovery functionality that is delivered through the v1.15.0 SessionStart addon seam and is NOT shipped in this repo. No public hook logic, detection, methodology-content, or enforcement surface changes here; this release carries the lockstep version bump only.
