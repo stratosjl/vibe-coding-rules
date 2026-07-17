@@ -121,6 +121,23 @@ def build_fixtures(parent: Path) -> list[dict[str, Any]]:
         "note": "v1.13.0: bare legacy `tier: T4` line also recognised as sentinel (backwards-compat)",
     })
 
+    # AGENTS.md criticality: regulatory keyword in AGENTS.md lifts C (S1/C1 -> T2).
+    cases.append({
+        "cwd": str(make_fixture(parent, "agents-md-crit", {
+            "AGENTS.md": "# project\nGDPR applies to this service.\n",
+        })),
+        "expected_tier": "T2",
+        "note": "AGENTS.md regulatory keyword -> C1 (S1/C1 -> T2)",
+    })
+    # AGENTS.md sentinel: tier: T3 line in AGENTS.md overrides (T3).
+    cases.append({
+        "cwd": str(make_fixture(parent, "agents-md-sentinel", {
+            "AGENTS.md": "---\ntier: T3\n---\n# project\n",
+        })),
+        "expected_tier": "T3",
+        "note": "AGENTS.md tier sentinel -> T3 override",
+    })
+
     return cases
 
 

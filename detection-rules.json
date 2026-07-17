@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "comment": "Detection rules for the VC-RoE (Vibe Coding · Rules of Engagement) plugin SessionStart hook. Renamed from vc-roe at v1.0.0 (2026-05-06). Editable without re-shipping the plugin code; bumps plugin.json version on push. Source basis: tier-model-v2.md sections 2 and 4, locked at D-MET-1..13. Note: oneshot_keywords and irreversible_action_keywords (tier-model-v2 section 4 step 8 msg_delta inputs) were removed at v0.1.1 because the SessionStart event has no first-user-message access; that scoring is architecturally incompatible with this hook contract. Regulatory keywords stay in because score_criticality reads them from CLAUDE.md at hook time.",
   "regulatory_keywords": [
     "DORA",
@@ -59,6 +59,7 @@
     ],
     "criticality_text_sources": [
       "CLAUDE.md",
+      "AGENTS.md",
       "README.md",
       "docs/README.md"
     ]

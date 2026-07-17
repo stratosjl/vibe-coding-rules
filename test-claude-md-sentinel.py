@@ -53,9 +53,9 @@ def make_fixture(parent: Path, name: str, initial_content: Optional[str]) -> Pat
     return fix
 
 
-def run_helper(cwd: Path, tier: str) -> tuple[int, str, str]:
+def run_helper(cwd: Path, tier: str, extra_args: tuple[str, ...] = ()) -> tuple[int, str, str]:
     proc = subprocess.run(
-        [sys.executable, str(HELPER), tier],
+        [sys.executable, str(HELPER), tier, *extra_args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -241,6 +241,72 @@ def case_non_ascii_path(parent: Path) -> bool:
     return ok
 
 
+def case_auto_only_agents_md(parent: Path) -> bool:
+    """Case 10: --target auto with only AGENTS.md present → AGENTS.md chosen,
+    sentinel prepended as frontmatter, no CLAUDE.md created."""
+    print("\n== Case 10: --target auto picks AGENTS.md when CLAUDE.md absent ==")
+    fix = make_fixture(parent, "case10-auto-agents", None)
+    (fix / "AGENTS.md").write_text("# My Project\n\nSome content here.\n", encoding="utf-8", newline="")
+    rc, stdout, _ = run_helper(fix, "T2", ("--target", "auto"))
+    ok = True
+    ok &= rc == 0
+    ok &= assert_contains("action=prepended", stdout, "prepended")
+    content = (fix / "AGENTS.md").read_text(encoding="utf-8")
+    ok &= assert_eq(
+        "AGENTS.md content (frontmatter prepended, body preserved)",
+        content,
+        "---\ntier: T2\n---\n\n# My Project\n\nSome content here.\n",
+    )
+    if (fix / "CLAUDE.md").exists():
+        print("  FAIL: CLAUDE.md was created despite --target auto with only AGENTS.md")
+        ok = False
+    else:
+        print("  PASS: no CLAUDE.md created")
+    return ok
+
+
+def case_explicit_agents_md(parent: Path) -> bool:
+    """Case 11: --target AGENTS.md explicit with both files present → AGENTS.md
+    updated, CLAUDE.md untouched."""
+    print("\n== Case 11: --target AGENTS.md explicit updates AGENTS.md only ==")
+    fix = make_fixture(parent, "case11-explicit-agents", "---\ntier: T2\n---\n\n# Claude\n")
+    (fix / "AGENTS.md").write_text("---\ndescription: agents\n---\n\n# Agents\n", encoding="utf-8", newline="")
+    rc, stdout, _ = run_helper(fix, "T4", ("--target", "AGENTS.md"))
+    ok = True
+    ok &= rc == 0
+    ok &= assert_contains("action=inserted", stdout, "inserted")
+    agents = (fix / "AGENTS.md").read_text(encoding="utf-8")
+    ok &= assert_eq(
+        "AGENTS.md content (tier inserted into frontmatter)",
+        agents,
+        "---\ndescription: agents\ntier: T4\n---\n\n# Agents\n",
+    )
+    claude = (fix / "CLAUDE.md").read_text(encoding="utf-8")
+    ok &= assert_eq("CLAUDE.md untouched", claude, "---\ntier: T2\n---\n\n# Claude\n")
+    return ok
+
+
+def case_auto_claude_md_preserved(parent: Path) -> bool:
+    """Case 12: --target auto with CLAUDE.md present → CLAUDE.md chosen
+    (existing default behavior preserved), AGENTS.md untouched."""
+    print("\n== Case 12: --target auto keeps CLAUDE.md priority ==")
+    fix = make_fixture(parent, "case12-auto-claude", "# Claude project\n")
+    (fix / "AGENTS.md").write_text("# Agents project\n", encoding="utf-8", newline="")
+    rc, stdout, _ = run_helper(fix, "T3", ("--target", "auto"))
+    ok = True
+    ok &= rc == 0
+    ok &= assert_contains("action=prepended", stdout, "prepended")
+    claude = (fix / "CLAUDE.md").read_text(encoding="utf-8")
+    ok &= assert_eq(
+        "CLAUDE.md content (frontmatter prepended)",
+        claude,
+        "---\ntier: T3\n---\n\n# Claude project\n",
+    )
+    agents = (fix / "AGENTS.md").read_text(encoding="utf-8")
+    ok &= assert_eq("AGENTS.md untouched", agents, "# Agents project\n")
+    return ok
+
+
 def main() -> int:
     _force_utf8_streams()
     if not HELPER.is_file():
@@ -259,6 +325,9 @@ def main() -> int:
             case_invalid_tier(parent),
             case_cross_machine_simulation(parent),
             case_non_ascii_path(parent),
+            case_auto_only_agents_md(parent),
+            case_explicit_agents_md(parent),
+            case_auto_claude_md_preserved(parent),
         ]
     finally:
         shutil.rmtree(parent, ignore_errors=True)

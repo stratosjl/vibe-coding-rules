@@ -369,15 +369,24 @@ def detect_tier(cwd: Path, env: dict[str, str], rules: dict[str, Any]) -> dict[s
     git_root = find_git_root(cwd, max_levels)
     project_root = git_root or cwd
 
-    claude_md = walk_up_for_file("CLAUDE.md", cwd, project_root)
-    cm_tier = find_tier_in_claude_md(claude_md)
-    if cm_tier:
+    sentinel_tier = None
+    sentinel_path: Optional[Path] = None
+    sentinel_source = "claude.md"
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        candidate = walk_up_for_file(name, cwd, project_root)
+        tier = find_tier_in_claude_md(candidate)
+        if tier:
+            sentinel_tier = tier
+            sentinel_path = candidate
+            sentinel_source = "claude.md" if name == "CLAUDE.md" else "agents.md"
+            break
+    if sentinel_tier:
         return {
-            "tier": cm_tier,
+            "tier": sentinel_tier,
             "scope": None,
             "crit": None,
-            "source": "claude.md",
-            "signals": [f"sentinel:{cm_tier}@{claude_md}"],
+            "source": sentinel_source,
+            "signals": [f"sentinel:{sentinel_tier}@{sentinel_path}"],
             "project_root": str(project_root),
             "git_root_found": git_root is not None,
         }

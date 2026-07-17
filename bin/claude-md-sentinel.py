@@ -2,10 +2,14 @@
 """claude-md-sentinel.py — insert/update tier sentinel in project CLAUDE.md.
 
 Usage:
-    python claude-md-sentinel.py <NEW_TIER> [--project-root <path>]
+    python claude-md-sentinel.py <NEW_TIER> [--project-root <path>] [--target {auto,CLAUDE.md,AGENTS.md}]
 
 <NEW_TIER>          one of T0, T1, T2, T3, T4.
 --project-root      override auto-discovery (defaults to git-root walk from cwd).
+--target            sentinel file (default auto: CLAUDE.md when present at project
+                    root, AGENTS.md when it is the only one of the two present;
+                    with neither present CLAUDE.md is created, matching the
+                    behavior from before --target existed).
 
 Why this exists (v1.13.0):
     The project tier floor at ~/.claude/projects/<encoded-cwd>/methodology-tier-floor
@@ -158,8 +162,8 @@ def update_frontmatter_block(block_body: str, new_tier: str) -> Tuple[str, bool]
     return block_body + f"tier: {new_tier}", True
 
 
-def write_sentinel(project_root: Path, new_tier: str) -> str:
-    claude_md = project_root / "CLAUDE.md"
+def write_sentinel(project_root: Path, new_tier: str, target: str = "CLAUDE.md") -> str:
+    claude_md = project_root / target
     if not claude_md.is_file():
         content = f"---\ntier: {new_tier}\n---\n"
         atomic_write(claude_md, content)
@@ -214,6 +218,12 @@ def main(argv: list[str]) -> int:
         default=None,
         help="Override project-root auto-discovery (defaults to git-root walk from cwd).",
     )
+    parser.add_argument(
+        "--target",
+        choices=["auto", "CLAUDE.md", "AGENTS.md"],
+        default="auto",
+        help="Sentinel file. auto: CLAUDE.md if it exists at project root, else AGENTS.md.",
+    )
     args = parser.parse_args(argv[1:])
 
     new_tier = args.tier.strip().upper()
@@ -225,13 +235,23 @@ def main(argv: list[str]) -> int:
         return 1
 
     project_root = resolve_project_root(args.project_root)
+    target = args.target
+    if target == "auto":
+        # CLAUDE.md keeps priority; AGENTS.md is picked only when it is the
+        # project's sentinel file. With neither present, keep the pre-existing
+        # behavior of creating CLAUDE.md so existing no-flag callers see zero
+        # behavior change.
+        if (project_root / "AGENTS.md").exists() and not (project_root / "CLAUDE.md").exists():
+            target = "AGENTS.md"
+        else:
+            target = "CLAUDE.md"
     try:
-        action = write_sentinel(project_root, new_tier)
+        action = write_sentinel(project_root, new_tier, target)
     except OSError as e:
-        print(f"error: CLAUDE.md write failed at {project_root}: {e}", file=sys.stderr)
+        print(f"error: {target} write failed at {project_root}: {e}", file=sys.stderr)
         return 2
 
-    claude_md = project_root / "CLAUDE.md"
+    claude_md = project_root / target
     print(f"claude-md-sentinel: {action} tier={new_tier} at {claude_md}")
     return 0
 
