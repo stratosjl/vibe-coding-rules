@@ -4,6 +4,17 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## [1.19.0] - 2026-07-17
+
+### Added
+- Kimi Code CLI support: `kimi.plugin.json` manifest, `hooks/kimi/` contract adapters (SessionStart, UserPromptSubmit, Stop, SessionEnd, PostToolUse), `commands-kimi/` slash commands. The Kimi adapters importlib-load the existing hook modules and reuse their orchestration; no existing Claude behavior changes.
+- Block-based heartbeat on Kimi: overdue cadence blocks the Stop event with an instruction (cap 2, then trust-advance); replaces transcript sentinel-grep, which Kimi payloads do not verifiably support.
+- AGENTS.md is read alongside CLAUDE.md for criticality keywords and the `tier: T<N>` sentinel (CLAUDE.md keeps priority; `detection-rules.json` 1.2.0).
+- `bin/claude-md-sentinel.py --target {auto,CLAUDE.md,AGENTS.md}` (default auto: CLAUDE.md if present else AGENTS.md).
+
+### Testing
+- `test-kimi-adapter.py` validation runner (adapter core, all five adapters, commands structure).
+
 ## 1.18.1 - 2026-06-24
 
 Hardening release: makes the pre-push publish-audit gate **self-arming** inside the vibe-coding-rules clone.

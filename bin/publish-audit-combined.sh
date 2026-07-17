@@ -48,7 +48,7 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
-HARNESS_VERSION="1.18.1"
+HARNESS_VERSION="1.19.0"
 VERBOSE=0
 
 # Resolve a Python interpreter that actually runs. On Windows, `python3`

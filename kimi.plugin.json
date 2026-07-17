@@ -1,0 +1,16 @@
+{
+  "name": "vc-roe",
+  "version": "1.19.0",
+  "description": "VC-RoE - Vibe Coding · Rules of Engagement for Kimi Code CLI. Auto-detects project complexity (Scope x Criticality) and injects the matching methodology slice at SessionStart. Five tiers T0..T4 with hook-driven heartbeat.",
+  "author": { "name": "Stratos Laspas", "email": "stratosjl@gmail.com" },
+  "homepage": "https://github.com/stratosjl/vibe-coding-rules",
+  "license": "GPL-3.0-or-later",
+  "hooks": [
+    { "event": "SessionStart", "command": "python ./hooks/kimi/session_start.py", "timeout": 20 },
+    { "event": "UserPromptSubmit", "command": "python ./hooks/kimi/user_prompt_submit.py", "timeout": 5 },
+    { "event": "Stop", "command": "python ./hooks/kimi/stop.py", "timeout": 5 },
+    { "event": "SessionEnd", "command": "python ./hooks/kimi/session_end.py", "timeout": 5 },
+    { "event": "PostToolUse", "matcher": "Edit|Write|Bash", "command": "python ./hooks/kimi/post_tool_use.py", "timeout": 5 }
+  ],
+  "commands": "./commands-kimi/"
+}

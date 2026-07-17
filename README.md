@@ -69,6 +69,16 @@ claude plugin install vc-roe@vibe-coding-rules --scope user
 
 The install scripts are equivalent to the manual marketplace flow; they exist so first-time users have a single command.
 
+## Kimi Code CLI
+
+The same repo installs into Kimi Code CLI (v1.19.0+):
+
+```bash
+kimi /plugins install https://github.com/stratosjl/vibe-coding-rules
+```
+
+Tier detection, methodology slices, `/vc-roe:*` commands, and the T2+ heartbeat work identically. Implementation detail: Kimi's Stop hook is blockable, so the heartbeat uses turn-end blocking instead of transcript sentinel-grep. `AGENTS.md` is honored alongside `CLAUDE.md` for detection on both harnesses.
+
 ## Slash commands
 
 - `/vc-roe:tier` — display the current tier and (S, C) trace
