@@ -181,6 +181,60 @@ def t_ups_clock_tag_and_pending() -> None:
 ALL_TESTS += [("ups-clock-pending", t_ups_clock_tag_and_pending)]
 
 
+# --- Task 5: stop (block-based heartbeat) ---
+
+def _seed_anchor(A, sid, **over):
+    upsmod = A.load_hook_module("user-prompt-submit")
+    fields = {"T0": str(int(time.time()) - 3600), "LAST_HEARTBEAT": str(int(time.time()) - 3600),
+              "TIER": "T2"}
+    fields.update(over)
+    upsmod.write_anchor(sid, fields)
+    return upsmod
+
+
+def t_stop_under_cadence_allows() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    st = load("stop.py", "kimi_stop")
+    sid = f"ktest-stop1-{os.getpid()}"
+    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 60))
+    rc, out, err = run_adapter(st, {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()})
+    check("stop: under cadence allows", rc == 0 and not err)
+
+
+def t_stop_overdue_blocks_then_trust_advances() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    st = load("stop.py", "kimi_stop")
+    upsmod = A.load_hook_module("user-prompt-submit")
+    sid = f"ktest-stop2-{os.getpid()}"
+    _seed_anchor(A, sid)  # 60 min since heartbeat, cadence 15m
+    ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
+    rc1, _, err1 = run_adapter(st, ev)
+    check("stop: block 1 (rc2+instruction)", rc1 == 2 and "heartbeat-fired" in err1)
+    rc2, _, err2 = run_adapter(st, ev)
+    check("stop: block 2 (cap boundary)", rc2 == 2)
+    rc3, _, err3 = run_adapter(st, ev)
+    check("stop: cap reached -> allow", rc3 == 0)
+    anchor = upsmod.read_anchor(sid)
+    check("stop: trust-advanced LAST_HEARTBEAT",
+          abs(int(anchor["LAST_HEARTBEAT"]) - int(time.time())) < 30)
+    check("stop: STOP_BLOCKS reset", anchor.get("STOP_BLOCKS") == "0")
+
+
+def t_stop_tier_and_anchor_guards() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    st = load("stop.py", "kimi_stop")
+    ev = {"hook_event_name": "Stop", "session_id": "ktest-stop3", "cwd": os.getcwd()}
+    rc, _, _ = run_adapter(st, ev)  # no anchor at all
+    check("stop: no anchor allows", rc == 0)
+    sid = f"ktest-stop4-{os.getpid()}"
+    _seed_anchor(A, sid, TIER="T1")
+    rc, _, _ = run_adapter(st, {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()})
+    check("stop: T1 allows (heartbeat is T2+)", rc == 0)
+
+
+ALL_TESTS += [("stop-under-cadence", t_stop_under_cadence_allows), ("stop-block-trust", t_stop_overdue_blocks_then_trust_advances), ("stop-guards", t_stop_tier_and_anchor_guards)]
+
+
 def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
     for name, fn in ALL_TESTS:
