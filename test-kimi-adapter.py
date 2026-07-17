@@ -235,6 +235,30 @@ def t_stop_tier_and_anchor_guards() -> None:
 ALL_TESTS += [("stop-under-cadence", t_stop_under_cadence_allows), ("stop-block-trust", t_stop_overdue_blocks_then_trust_advances), ("stop-guards", t_stop_tier_and_anchor_guards)]
 
 
+# --- Task 6: post_tool_use (writer promotion) ---
+
+def t_ptu_writer_promotion() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    ptu = load("post_tool_use.py", "kimi_ptu")
+    ssmod = A.load_hook_module("session-start")
+    with tempfile.TemporaryDirectory() as td:
+        ssmod.write_claim(Path(td), "ktest-ptu", int(time.time()),
+                          "testhost", os.getpid(), None, "bootx", mode="reader")
+        ev = {"hook_event_name": "PostToolUse", "session_id": "ktest-ptu", "cwd": td,
+              "tool_name": "Edit", "tool_input": {"path": str(Path(td) / "decisions.md")}}
+        rc, out, err = run_adapter(ptu, ev)
+        claim = __import__("json").loads(ssmod.claim_path(Path(td)).read_text())
+        check("ptu: reader promoted to writer on Edit",
+              rc == 0 and claim.get("mode") == "writer", str(claim))
+        # Non-write tool: no crash, no-op.
+        ev["tool_name"] = "Read"
+        rc, out, err = run_adapter(ptu, ev)
+        check("ptu: Read no-op exits 0", rc == 0)
+
+
+ALL_TESTS += [("ptu-writer-promotion", t_ptu_writer_promotion)]
+
+
 def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
     for name, fn in ALL_TESTS:
