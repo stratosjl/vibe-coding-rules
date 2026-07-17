@@ -101,12 +101,55 @@ def t_core_malformed_extract() -> None:
           A.extract_additional_context("not json\n{\"x\":1}\n") == "")
 
 
+# --- Task 3: session_start / session_end ---
+
+def t_session_start_injects_slice() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    ss = load("session_start.py", "kimi_session_start")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".git").mkdir()
+        (root / "decisions.md").write_text("# d\n")
+        (root / "handovers").mkdir()
+        event = {"hook_event_name": "SessionStart", "session_id": "ktest-ss",
+                 "cwd": td, "source": "startup"}
+        rc, out, err = run_adapter(ss, event)
+    if A.SESSION_START_DIRECT:
+        check("ss: slice emitted directly", rc == 0 and "Methodology in force" in out, out[:80])
+    else:
+        check("ss: deferred -> no direct emit", rc == 0 and "Methodology in force" not in out)
+        check("ss: deferred -> pending written", A.pop_pending("ktest-ss").find("Methodology in force") >= 0)
+
+
+def t_session_start_t0_noop_and_failsafe() -> None:
+    ss = load("session_start.py", "kimi_session_start")
+    rc, out, err = run_adapter(ss, {"hook_event_name": "SessionStart",
+                                    "session_id": "", "cwd": "/nonexistent-dir-xyz"})
+    check("ss: degenerate event exits 0", rc == 0)
+
+
+def t_session_end_releases_claim() -> None:
+    se = load("session_end.py", "kimi_session_end")
+    # Seed a claim the way session-start.py does, in a temp project.
+    with tempfile.TemporaryDirectory() as td:
+        A = load("_adapter.py", "kimi_adapter")
+        ssmod = A.load_hook_module("session-start")
+        ssmod.write_claim(Path(td), "ktest-se", int(time.time()),
+                          "testhost", os.getpid(), None, "bootx", mode="reader")
+        claim = ssmod.claim_path(Path(td))
+        check("se: claim seeded", claim.is_file())
+        rc, out, err = run_adapter(se, {"hook_event_name": "SessionEnd",
+                                        "session_id": "ktest-se", "cwd": td})
+        check("se: claim released", rc == 0 and not claim.exists())
+
+
 ALL_TESTS = [
     ("core-load-run", t_core_load_and_run),
     ("core-emit-block", t_core_emit_and_block),
     ("core-pending", t_core_pending_roundtrip),
     ("core-malformed-extract", t_core_malformed_extract),
 ]
+ALL_TESTS += [("session-start-injects", t_session_start_injects_slice), ("session-start-failsafe", t_session_start_t0_noop_and_failsafe), ("session-end-claim", t_session_end_releases_claim)]
 
 
 def main() -> int:
