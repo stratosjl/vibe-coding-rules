@@ -222,7 +222,7 @@ def main(argv: list[str]) -> int:
         "--target",
         choices=["auto", "CLAUDE.md", "AGENTS.md"],
         default="auto",
-        help="Sentinel file. auto: CLAUDE.md if it exists at project root, else AGENTS.md.",
+        help="Sentinel file. auto: CLAUDE.md if present; AGENTS.md only when it is the sole sentinel file; otherwise CLAUDE.md.",
     )
     args = parser.parse_args(argv[1:])
 

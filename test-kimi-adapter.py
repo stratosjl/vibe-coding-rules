@@ -259,6 +259,25 @@ def t_ptu_writer_promotion() -> None:
 ALL_TESTS += [("ptu-writer-promotion", t_ptu_writer_promotion)]
 
 
+# --- Task 8: commands-kimi structure ---
+
+def t_commands_kimi_structure() -> None:
+    d = PLUGIN_ROOT / "commands-kimi"
+    names = {"tier.md", "raise-tier.md", "lower-tier.md", "audit-pass.md"}
+    check("commands: all four present", names <= {p.name for p in d.glob("*.md")})
+    for p in sorted(d.glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        check(f"commands: {p.name} frontmatter", text.startswith("---"))
+        check(f"commands: {p.name} no claude plugin path", "$HOME/.claude/plugins" not in text)
+        if p.name != "audit-pass.md":
+            check(f"commands: {p.name} kimi plugin path",
+                  ".kimi-code/plugins/managed/vc-roe" in text)
+            check(f"commands: {p.name} sentinel --target auto", "--target auto" in text)
+
+
+ALL_TESTS += [("commands-structure", t_commands_kimi_structure)]
+
+
 def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
     for name, fn in ALL_TESTS:
