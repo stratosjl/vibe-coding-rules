@@ -53,8 +53,10 @@ bump these values in lockstep:
 5. `hooks/stop.py` → `ROUTINE_VERSION`
 6. `hooks/session-end.py` → `ROUTINE_VERSION`
 7. `bin/publish-audit-combined.sh` → `HARNESS_VERSION`
+8. `kimi.plugin.json` → `version`
+9. `hooks/kimi/_adapter.py` → `KIMI_ADAPTER_VERSION`
 
-The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants and the audit harness's `HARNESS_VERSION` are mirrors that travel with the hook/harness code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all seven. (This is the "7-constant lockstep"; the harness version was the seventh, historically omitted from this list per OBS-AUD-4.)
+The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants, the audit harness's `HARNESS_VERSION`, and the two Kimi version carriers are mirrors that travel with the hook/harness code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all nine. (This is the "9-constant lockstep"; the harness version was the seventh, historically omitted from this list per OBS-AUD-4, and the two Kimi carriers joined with the dual-harness support.)
 
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 

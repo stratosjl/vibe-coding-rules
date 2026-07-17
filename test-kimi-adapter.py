@@ -3,7 +3,7 @@
 
 Script-style harness (repo convention): exercises each adapter with
 synthetic Kimi payloads, prints PASS/FAIL per check, exits 1 on any failure.
-Fixtures mirror the captures in docs/superpowers/probe/ (vc-roe-private).
+Fixtures mirror the Task-1 hook-contract probe captures (archived outside this repo).
 
 Usage:
     python3 test-kimi-adapter.py
@@ -206,7 +206,7 @@ def t_stop_overdue_blocks_then_trust_advances() -> None:
     st = load("stop.py", "kimi_stop")
     upsmod = A.load_hook_module("user-prompt-submit")
     sid = f"ktest-stop2-{os.getpid()}"
-    _seed_anchor(A, sid)  # 60 min since heartbeat, cadence 15m
+    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 20 * 60))  # 20m stale: overdue, under the 2x trust escape
     ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
     rc1, _, err1 = run_adapter(st, ev)
     check("stop: block 1 (rc2+instruction)", rc1 == 2 and "heartbeat-fired" in err1)
@@ -276,6 +276,87 @@ def t_commands_kimi_structure() -> None:
 
 
 ALL_TESTS += [("commands-structure", t_commands_kimi_structure)]
+
+
+# --- Final-review hardening: stop trust-2x escape + no-cwd guards ---
+
+def t_stop_trust_2x_escape() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    st = load("stop.py", "kimi_stop")
+    upsmod = A.load_hook_module("user-prompt-submit")
+    sid = f"ktest-stop2x-{os.getpid()}"
+    # LAST_HEARTBEAT 35 min old (>= 2 * 15m cadence); STOP_BLOCKS absent.
+    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 35 * 60))
+    ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
+    rc, _, err = run_adapter(st, ev)
+    check("stop: trust-2x escape allows", rc == 0 and not err, f"rc={rc}")
+    anchor = upsmod.read_anchor(sid)
+    check("stop: trust-2x advanced LAST_HEARTBEAT",
+          abs(int(anchor.get("LAST_HEARTBEAT", "0")) - int(time.time())) < 30)
+    check("stop: trust-2x STOP_BLOCKS zeroed", anchor.get("STOP_BLOCKS") == "0")
+
+
+def _log_since(A, offset: int) -> str:
+    try:
+        with open(A.LOG_PATH, encoding="utf-8") as f:
+            f.seek(offset)
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _log_size(A) -> int:
+    try:
+        return A.LOG_PATH.stat().st_size
+    except OSError:
+        return 0
+
+
+def t_session_start_no_cwd_noop() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    ss = load("session_start.py", "kimi_session_start")
+    sid = f"ktest-nocwd-ss-{os.getpid()}"
+    A.pop_pending(sid)  # clean slate
+    with tempfile.TemporaryDirectory() as td:
+        # Project-shaped fallback target: if the no-cwd guard is missing the
+        # Claude module falls back to os.getcwd() and emits a slice.
+        (Path(td) / ".git").mkdir()
+        (Path(td) / "decisions.md").write_text("# d\n")
+        (Path(td) / "handovers").mkdir()
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(td)
+            for label, ev in (("missing", {"hook_event_name": "SessionStart",
+                                           "session_id": sid, "source": "startup"}),
+                              ("empty", {"hook_event_name": "SessionStart",
+                                         "session_id": sid, "cwd": "", "source": "startup"})):
+                before = _log_size(A)
+                rc, out, _ = run_adapter(ss, ev)
+                check(f"ss: no-cwd ({label}) rc0 + silent stdout", rc == 0 and out == "")
+                check(f"ss: no-cwd ({label}) skip logged",
+                      '"phase": "no-cwd"' in _log_since(A, before))
+        finally:
+            os.chdir(prev_cwd)
+    check("ss: no-cwd wrote no pending", A.pop_pending(sid) == "")
+
+
+def t_ptu_no_cwd_noop() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    ptu = load("post_tool_use.py", "kimi_ptu")
+    for label, ev in (("missing", {"hook_event_name": "PostToolUse", "session_id": "ktest-nocwd-ptu",
+                                   "tool_name": "Edit", "tool_input": {"path": "/tmp/x"}}),
+                      ("empty", {"hook_event_name": "PostToolUse", "session_id": "ktest-nocwd-ptu",
+                                 "cwd": "", "tool_name": "Edit", "tool_input": {"path": "/tmp/x"}})):
+        before = _log_size(A)
+        rc, out, _ = run_adapter(ptu, ev)
+        check(f"ptu: no-cwd ({label}) rc0 + silent stdout", rc == 0 and out == "")
+        check(f"ptu: no-cwd ({label}) skip logged",
+              '"phase": "no-cwd"' in _log_since(A, before))
+
+
+ALL_TESTS += [("stop-trust-2x", t_stop_trust_2x_escape),
+              ("session-start-no-cwd", t_session_start_no_cwd_noop),
+              ("ptu-no-cwd", t_ptu_no_cwd_noop)]
 
 
 def main() -> int:

@@ -42,6 +42,10 @@ def main() -> int:
     except Exception as e:
         A.append_log({"ts": started, "hook": "kimi-ptu", "phase": "stdin", "error": str(e)})
         return 0
+    if not event.get("cwd"):  # spec §4: no usable cwd -> no-op
+        A.append_log({"ts": started, "hook": "kimi-ptu", "phase": "no-cwd",
+                      "session_id": str(event.get("session_id") or "")})
+        return 0
     try:
         event = _translate_tool_input(event)
         mod = A.load_hook_module("post-tool-use")

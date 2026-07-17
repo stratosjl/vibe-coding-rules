@@ -8,6 +8,10 @@ turn end with an explicit instruction. Consecutive blocks are capped at
 MAX_BLOCKS; the cap allow trust-advances LAST_HEARTBEAT. The OVERDUE flag in
 every UserPromptSubmit clock tag keeps pressuring a non-compliant model.
 
+Note: the Kimi heartbeat has no compliance channel (no transcript access),
+so a compliant model is still blocked up to MAX_BLOCKS per cycle before the
+trust-advance moves LAST_HEARTBEAT. This is intentional; do not "fix" it.
+
 Also refreshes the chat-claim ts, mirroring the Claude stop.py side effect.
 
 Pure stdlib. Never throws; exit 0 (allow) on any error.
@@ -26,7 +30,7 @@ MAX_BLOCKS = 2
 TIER_ACTIVE = {"T2", "T3", "T4"}
 
 INSTRUCTION = (
-    "vc-roe heartbeat due ({elapsed}m since the last heartbeat, 15m cadence, "
+    "vc-roe heartbeat due ({elapsed}m since session start, 15m cadence, "
     "D-MET-33). Before ending this turn, emit the session-health heartbeat "
     "block: 5 substantive content lines (1: session goal restated; 2: scope "
     "status; 3: anomaly status; 4: side-questions status; 5: background "
@@ -69,6 +73,14 @@ def main() -> int:
     if now - last_hb_effective < CADENCE_SEC:
         if blocks:
             ups.write_anchor(session_id, {**anchor, "STOP_BLOCKS": "0"})
+        return 0
+    if now - last_hb_effective >= 2 * CADENCE_SEC:
+        # Time-based escape mirroring user-prompt-submit's OVERDUE_2X: a lapse
+        # of two cadences or more force-advances LAST_HEARTBEAT, so a session
+        # whose anchor writes keep failing cannot be blocked on every Stop.
+        ups.write_anchor(session_id, {**anchor, "STOP_BLOCKS": "0", "LAST_HEARTBEAT": str(now)})
+        A.append_log({"ts": started, "hook": "kimi-stop", "session_id": session_id,
+                      "blocked": False, "heartbeat_advanced": "trust-2x"})
         return 0
     if blocks < MAX_BLOCKS:
         ups.write_anchor(session_id, {**anchor, "STOP_BLOCKS": str(blocks + 1)})

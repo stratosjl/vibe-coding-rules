@@ -26,7 +26,8 @@ KIMI_ADAPTER_VERSION = "1.19.0"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 HOOKS_DIR = Path(__file__).resolve().parent.parent  # the Claude hook modules live here
 
-# PROBE DECISIONS (Task 1, PROBE-NOTES.md). Defaults assume the conservative
+# PROBE DECISIONS (the Task-1 probe notes, archived outside this repo).
+# Defaults assume the conservative
 # path: SessionStart stdout does NOT land -> defer injection to first prompt.
 SESSION_START_DIRECT = False  # set True iff probe shows SessionStart stdout in context
 ENVELOPE_HONORED = False      # set True iff probe shows hookSpecificOutput honored

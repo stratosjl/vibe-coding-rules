@@ -28,6 +28,10 @@ def main() -> int:
     except Exception as e:
         A.append_log({"ts": started, "hook": "kimi-session-start", "phase": "stdin", "error": str(e)})
         return 0
+    if not event.get("cwd"):  # spec §4: no usable cwd -> no-op (no fallback to os.getcwd())
+        A.append_log({"ts": started, "hook": "kimi-session-start", "phase": "no-cwd",
+                      "session_id": str(event.get("session_id") or "")})
+        return 0
     try:
         mod = A.load_hook_module("session-start")
         out = A.run_module_main(mod, event)
