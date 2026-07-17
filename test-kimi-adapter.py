@@ -152,6 +152,35 @@ ALL_TESTS = [
 ALL_TESTS += [("session-start-injects", t_session_start_injects_slice), ("session-start-failsafe", t_session_start_t0_noop_and_failsafe), ("session-end-claim", t_session_end_releases_claim)]
 
 
+# --- Task 4: user_prompt_submit ---
+
+def t_ups_clock_tag_and_pending() -> None:
+    A = load("_adapter.py", "kimi_adapter")
+    ups_hook = load("user_prompt_submit.py", "kimi_ups")
+    upsmod = A.load_hook_module("user-prompt-submit")
+    sid = f"ktest-ups-{os.getpid()}"
+    now = int(time.time())
+    upsmod.write_anchor(sid, {"T0": str(now - 60), "LAST_HEARTBEAT": "0", "TIER": "T2"})
+    rc, out, err = run_adapter(ups_hook, {"hook_event_name": "UserPromptSubmit",
+                                          "session_id": sid, "cwd": os.getcwd(),
+                                          "user_prompt": "hi"})
+    check("ups: clock tag emitted", rc == 0 and "[session-clock:" in out, out[:80])
+    # Pending block prepended when present (deferred-injection path).
+    A.write_pending(sid, "PENDING-TIER-BLOCK")
+    rc, out, err = run_adapter(ups_hook, {"hook_event_name": "UserPromptSubmit",
+                                          "session_id": sid, "cwd": os.getcwd(),
+                                          "user_prompt": "hi again"})
+    check("ups: pending prepended once", "PENDING-TIER-BLOCK" in out)
+    rc, out, err = run_adapter(ups_hook, {"hook_event_name": "UserPromptSubmit",
+                                          "session_id": sid, "cwd": os.getcwd(),
+                                          "user_prompt": "and again"})
+    check("ups: pending consumed", "PENDING-TIER-BLOCK" not in out)
+    upsmod.write_anchor(sid, {"T0": "0", "LAST_HEARTBEAT": "0", "TIER": "T0"})  # cleanup-ish
+
+
+ALL_TESTS += [("ups-clock-pending", t_ups_clock_tag_and_pending)]
+
+
 def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
     for name, fn in ALL_TESTS:
