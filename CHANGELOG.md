@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.19.1 - 2026-07-18
+
+Hardening release for the v1.19.0 Kimi dual-harness support: final-review fixes to the Kimi adapters, a docs clarification, and the completed lockstep documentation. No Claude-side hook behaviour changes.
+
+- **`hooks/kimi/stop.py`: 2×-cadence liveness escape.** Mirrors user-prompt-submit's OVERDUE_2X: when two cadences or more have elapsed without a detected heartbeat, the Stop adapter force-advances `LAST_HEARTBEAT` ("trust-2x") instead of blocking every Stop, so a session whose anchor writes keep failing degrades to untracked instead of deadlocking. Heartbeat instruction wording corrected ("since session start"); the docstring now records that the MAX_BLOCKS block-cap is intentional (Kimi Stop payloads carry no transcript path, so there is no compliance channel — do not "fix" it).
+- **cwd guards (spec §4).** `hooks/kimi/session_start.py` and `hooks/kimi/post_tool_use.py` now no-op when the event carries no usable cwd, matching the other three adapters.
+- **Public-name scrub.** A `hooks/kimi/_adapter.py` comment no longer names the machine-local probe-notes artefact.
+- **Slash-command namespace note.** All eight `commands*/` files now state under the invocation line that the command is registered as `/vc-roe:<cmd>` and that the bare `/<cmd>` alias resolves (upstream Kimi Code #1611).
+- **`CONTRIBUTING.md`.** The lockstep list now documents all nine constants (the two Kimi carriers — `kimi.plugin.json` and `KIMI_ADAPTER_VERSION` in `hooks/kimi/_adapter.py` — joined with the dual-harness support), and a release step now calls for syncing managed install copies after tagging (a stale managed copy silently runs the previous release's hooks).
+- **`test-kimi-adapter.py`.** Coverage for the trust-2x escape and the cwd guards.
+
+Version: nine constants bumped to 1.19.1 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`, `kimi.plugin.json`, `KIMI_ADAPTER_VERSION`).
+
+What this does NOT change: tier-detection precedence and scoring; the publish-audit DENY/WARN pattern set; `detection-rules.json`; the methodology slices; Claude-side hook behaviour; the SessionStart `additionalContext` shape; the public-contract surface beyond the version values.
+
 ## [1.19.0] - 2026-07-17
 
 ### Added

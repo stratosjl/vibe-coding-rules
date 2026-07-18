@@ -58,6 +58,8 @@ bump these values in lockstep:
 
 The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants, the audit harness's `HARNESS_VERSION`, and the two Kimi version carriers are mirrors that travel with the hook/harness code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all nine. (This is the "9-constant lockstep"; the harness version was the seventh, historically omitted from this list per OBS-AUD-4, and the two Kimi carriers joined with the dual-harness support.)
 
+After tagging a release, also sync any managed install copies of the plugin on the release machine (the Kimi Code managed plugins directory, the Claude Code plugin cache). They are plain mirrors of the tree, and a stale copy silently runs the previous release's hooks. Re-running the installer or an `rsync -a --delete --exclude .git` from the repo root both work.
+
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 
 ## Optional machine-local SessionStart addon (extension point)
