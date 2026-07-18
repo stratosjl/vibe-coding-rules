@@ -5,6 +5,8 @@ argument-hint: ""
 
 User invoked `/raise-tier`.
 
+(Registered as `/vc-roe:raise-tier`: the CLI namespaces plugin commands with the plugin id; the bare `/raise-tier` alias resolves to this command.)
+
 Action:
 
 1. Identify the current effective tier from your context (SessionStart trace, or any prior `/tier` / `/raise-tier` / `/lower-tier` overrides during this session).

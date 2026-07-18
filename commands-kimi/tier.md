@@ -5,6 +5,8 @@ argument-hint: "[T0|T1|T2|T3|T4]"
 
 User invoked `/tier` with arguments: `$ARGUMENTS`
 
+(Registered as `/vc-roe:tier`: the CLI namespaces plugin commands with the plugin id; the bare `/tier` alias resolves to this command.)
+
 If `$ARGUMENTS` is empty:
 
 - Recall the tier you saw in the SessionStart `additionalContext` block at the start of this chat. Print the current display line in the canonical format: `Current tier: T<N> (S<x>/C<y>), <label>. Source: <auto|claude.md|claude-config|env|slash>.`

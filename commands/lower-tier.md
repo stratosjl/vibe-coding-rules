@@ -5,6 +5,8 @@ argument-hint: "[--project]"
 
 User invoked `/lower-tier` with arguments: `$ARGUMENTS`
 
+(Registered as `/vc-roe:lower-tier`: the CLI namespaces plugin commands with the plugin id; the bare `/lower-tier` alias resolves to this command.)
+
 Action:
 
 1. Identify the current effective tier from your context (SessionStart trace, or any prior `/tier` / `/raise-tier` / `/lower-tier` overrides during this session).

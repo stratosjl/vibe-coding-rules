@@ -4,6 +4,8 @@ description: Declare an audit-pass owed for the previous session. Locks the next
 
 User invoked `/audit-pass`.
 
+(Registered as `/vc-roe:audit-pass`: the CLI namespaces plugin commands with the plugin id; the bare `/audit-pass` alias resolves to this command.)
+
 Action:
 
 1. State that the previous session's handover footer should declare `Audit-pass owed for THIS session: Yes` with the trigger that caused it.
