@@ -505,6 +505,81 @@ def case_silent_stop_with_thinking_does_not_block(tmp: Path) -> tuple[bool, str]
         _cleanup(sid)
 
 
+def run_ups(session_id: str, enforce: bool = False) -> str:
+    """Run hooks/user-prompt-submit.py end-to-end; return its additionalContext."""
+    event = {"session_id": session_id, "cwd": str(PLUGIN_ROOT), "user_prompt": "carry on"}
+    env = os.environ.copy()
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+    if enforce:
+        env["VC_ROE_HEARTBEAT_ENFORCEMENT"] = "1"
+    else:
+        env.pop("VC_ROE_HEARTBEAT_ENFORCEMENT", None)
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "hooks" / "user-prompt-submit.py")],
+        input=json.dumps(event).encode("utf-8"),
+        capture_output=True,
+        env=env,
+        timeout=10,
+    )
+    out = proc.stdout.decode("utf-8", errors="replace").strip()
+    if not out:
+        return ""
+    try:
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    except Exception:
+        return out
+
+
+DEMAND = "Emit the session-health heartbeat"
+
+
+def case_ups_informational_tag_carries_no_demand(tmp: Path) -> tuple[bool, str]:
+    """I-9 default: past the cadence, the tag reports and demands nothing."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        # 45 min since T0 with no heartbeat: past the 30 min cadence, under 2x.
+        write_anchor(sid, t0=now - 45 * 60, last_hb=0, tier="T4")
+        ctx = run_ups(sid, enforce=False)
+        if "[session-clock:" not in ctx:
+            return False, f"FAIL: no clock tag emitted: {ctx!r}"
+        if ", DUE]" not in ctx:
+            return False, f"FAIL: expected the neutral DUE reading: {ctx!r}"
+        if DEMAND in ctx or "OVERDUE" in ctx:
+            return False, f"FAIL: demand or OVERDUE wording survived: {ctx!r}"
+        return True, "OK (clock tag only, reads DUE, nothing demanded)"
+    finally:
+        _cleanup(sid)
+
+
+def case_ups_enforcement_switch_restores_demand(tmp: Path) -> tuple[bool, str]:
+    """I-9 reversibility: the pre-1.20.0 demand comes back with the switch on."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 45 * 60, last_hb=0, tier="T4")
+        ctx = run_ups(sid, enforce=True)
+        if "OVERDUE" not in ctx or DEMAND not in ctx:
+            return False, f"FAIL: enforcement mode did not restore the demand: {ctx!r}"
+        return True, "OK (VC_ROE_HEARTBEAT_ENFORCEMENT=1 restores OVERDUE + demand)"
+    finally:
+        _cleanup(sid)
+
+
+def case_ups_under_cadence_is_ok(tmp: Path) -> tuple[bool, str]:
+    """20 min in is now under cadence: the tag reads OK, not DUE."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 20 * 60, last_hb=0, tier="T4")
+        ctx = run_ups(sid, enforce=False)
+        if ", OK]" not in ctx:
+            return False, f"FAIL: expected OK at 20 min under a 30 min cadence: {ctx!r}"
+        return True, "OK (20 min reads OK under the 30 min cadence)"
+    finally:
+        _cleanup(sid)
+
+
 def main() -> int:
     cases = [
         ("fresh sentinel advances", case_fresh_sentinel_advances),
@@ -524,6 +599,12 @@ def main() -> int:
          case_silent_stop_no_tool_use_does_not_block),
         ("silent-stop with thinking does not block (v1.12.1)",
          case_silent_stop_with_thinking_does_not_block),
+        ("clock tag informational, no demand (v1.20.0 I-9)",
+         case_ups_informational_tag_carries_no_demand),
+        ("enforcement switch restores the demand (v1.20.0 I-9)",
+         case_ups_enforcement_switch_restores_demand),
+        ("20 min is under the 30 min cadence (v1.20.0 I-9)",
+         case_ups_under_cadence_is_ok),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     try:

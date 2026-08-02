@@ -6,11 +6,28 @@ Renamed from vc-roe at v1.0.0 (2026-05-06).
 Companion to session-start.py (which writes the anchor file on SessionStart).
 Reads the anchor file, computes elapsed-since-T0 and elapsed-since-LAST_HEARTBEAT,
 emits a system-reminder context tag with the clock state. At OVERDUE-2X
-(>= 30 min since last heartbeat), auto-advances LAST_HEARTBEAT and emits an
-additional anomaly reminder (layered fail-safe per D-MET-41).
+(>= 60 min since last heartbeat), auto-advances LAST_HEARTBEAT so the clock
+cannot stay stuck (layered fail-safe per D-MET-41).
 
 Tier-aware: reads TIER from anchor; short-circuits to no-op at T0/T1
 (heartbeat rule is T2+ per D-MET-33).
+
+v1.20.0 heartbeat demotion (I-9). Two changes, both reversible:
+  (a) the cadence is 30 minutes, up from 15;
+  (b) the clock tag is INFORMATIONAL by default. The hook still reports
+      elapsed time so a session can see its own clock, but it no longer
+      demands a heartbeat block and no longer treats a missing sentinel as
+      a failure. Set VC_ROE_HEARTBEAT_ENFORCEMENT=1 (or flip the constant
+      below) to restore the pre-1.20.0 demand text unchanged.
+Evidence for the demotion, measured over the full 78-day hook log: the Stop
+hook failed to find its sentinel in 849 of 1,507 checks (56.3%); the clock
+tag read OVERDUE 45.7% of the time, OVERDUE-2X 12.8%, OK only 41.5%. The
+machinery is correct and cheap (about 1 second of added latency per day
+across 2,383 invocations); the 15-minute wall-clock cadence was simply not
+achievable in this working style, so the steady-state output was overdue
+flags and fail-safe auto-advances. A signal that fires more often than it is
+honoured trains the reader to ignore it, and it takes the credibility of
+every other hook-enforced rule with it.
 
 Pure stdlib. Never throws. Logs to ~/.claude/methodology-hook.log.
 Source basis: D-MET-33 (heartbeat T2+ cadence), D-MET-39..D-MET-41 (v0.1.7
@@ -20,6 +37,7 @@ hotfix structural enforcement).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -35,14 +53,30 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.19.1"
+ROUTINE_VERSION = "1.20.0"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-CADENCE_SEC = 15 * 60
-OVERDUE_2X_SEC = 30 * 60
+CADENCE_SEC = 30 * 60  # I-9: 30 min, up from 15 at v1.20.0
+OVERDUE_2X_SEC = 2 * CADENCE_SEC
 TIER_ACTIVE = {"T2", "T3", "T4"}
+
+# I-9 reversibility switch (v1.20.0). False = informational clock tag only.
+# True = the pre-1.20.0 behaviour, where an overdue clock re-demands a
+# heartbeat block. Flip the default here, or set the env var per session, to
+# restore enforcement without editing any other logic. The same switch name
+# is read by post-tool-use.py, stop.py and hooks/kimi/stop.py.
+HEARTBEAT_ENFORCEMENT_DEFAULT = False
+HEARTBEAT_ENFORCEMENT = os.environ.get(
+    "VC_ROE_HEARTBEAT_ENFORCEMENT",
+    "1" if HEARTBEAT_ENFORCEMENT_DEFAULT else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+# Informational mode reports the same clock with neutral vocabulary: a due
+# heartbeat is a reading, not a violation. The log keeps the original status
+# word so measurements stay comparable across the change.
+INFORMATIONAL_STATUS = {"OK": "OK", "OVERDUE": "DUE", "OVERDUE-2X": "DUE-2X"}
 
 
 def append_log(entry: dict[str, Any]) -> None:
@@ -155,13 +189,26 @@ def main() -> int:
         status = "OK"
 
     last_hb_display = (last_hb - t0) // 60 if last_hb > 0 else 0
+    tag_status = status if HEARTBEAT_ENFORCEMENT else INFORMATIONAL_STATUS[status]
     clock_tag = (
         f"[session-clock: T+{elapsed_t0_min}m | "
         f"last-heartbeat: T+{last_hb_display}m | "
-        f"next-due: T+{next_due_min}m, {status}]"
+        f"next-due: T+{next_due_min}m, {tag_status}]"
     )
 
-    if status == "OK":
+    if not HEARTBEAT_ENFORCEMENT:
+        # I-9: informational only. Emit the clock, demand nothing. The
+        # OVERDUE-2X auto-advance still runs so the reading cannot stay
+        # pinned at DUE-2X for the rest of the session.
+        ctx = f"<system-reminder>\n{clock_tag}\n</system-reminder>"
+        if elapsed_since_hb >= OVERDUE_2X_SEC:
+            write_anchor(session_id, {
+                "T0": str(t0),
+                "LAST_HEARTBEAT": str(now),
+                "TIER": tier,
+                "LAST_PTU_TAG_SEC": anchor.get("LAST_PTU_TAG_SEC", "0"),
+            })
+    elif status == "OK":
         ctx = f"<system-reminder>\n{clock_tag}\n</system-reminder>"
     elif status == "OVERDUE":
         ctx = (
@@ -207,6 +254,7 @@ def main() -> int:
         "elapsed_t0_min": elapsed_t0_min,
         "elapsed_since_hb_min": elapsed_hb_min,
         "status": status,
+        "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
         "routine_version": ROUTINE_VERSION,
     })
     return 0

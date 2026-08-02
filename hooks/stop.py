@@ -51,11 +51,23 @@ block emitted) whenever thinking blocks are present. Trade-off:
 silent-stop protection is effectively disabled in thinking-enabled
 sessions (every such turn carries thinking blocks) — accepted, because
 the alternative is a guaranteed API crash that poisons the transcript.
+
+v1.20.0 heartbeat demotion (I-9). The sentinel-grep keeps running and a
+found sentinel still advances LAST_HEARTBEAT, because that is what keeps
+the clock honest. What changes is the reading of a MISSING sentinel: it is
+recorded as an ordinary observation, not a failure, and nothing is
+re-demanded of the assistant. Measured over the full 78-day hook log, the
+sentinel was absent in 849 of 1,507 checks (56.3%), so absence was the
+normal case rather than the exceptional one. Set
+VC_ROE_HEARTBEAT_ENFORCEMENT=1 to put the enforced reading back. The
+silent-stop blocker above is a separate mechanism and is NOT affected by
+this switch.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -71,7 +83,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.19.1"
+ROUTINE_VERSION = "1.20.0"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -95,6 +107,15 @@ MODE_WRITER = "writer"
 DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 
 SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+\d+m\]")
+
+# I-9 reversibility switch (v1.20.0); see the module docstring and
+# user-prompt-submit.py. False = a missing sentinel is an observation, not a
+# failure. True restores the pre-1.20.0 reading.
+HEARTBEAT_ENFORCEMENT_DEFAULT = False
+HEARTBEAT_ENFORCEMENT = os.environ.get(
+    "VC_ROE_HEARTBEAT_ENFORCEMENT",
+    "1" if HEARTBEAT_ENFORCEMENT_DEFAULT else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def append_log(entry: dict[str, Any]) -> None:
@@ -521,11 +542,15 @@ def main() -> int:
         return 0
 
     if not SENTINEL_RE.search(text):
+        # I-9: informational by default. The key name stays "sentinel_found"
+        # so historical log analysis keeps working; "enforcement" records how
+        # the absence was read at the time.
         append_log({
             "ts": time.time(),
             "hook": "stop",
             "session_id": session_id,
             "sentinel_found": False,
+            "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
             "routine_version": ROUTINE_VERSION,
         })
         return 0
@@ -548,6 +573,7 @@ def main() -> int:
         "session_id": session_id,
         "sentinel_found": True,
         "last_heartbeat_advanced_to": now,
+        "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
         "routine_version": ROUTINE_VERSION,
     })
     return 0

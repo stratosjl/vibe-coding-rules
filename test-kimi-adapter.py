@@ -181,43 +181,79 @@ def t_ups_clock_tag_and_pending() -> None:
 ALL_TESTS += [("ups-clock-pending", t_ups_clock_tag_and_pending)]
 
 
-# --- Task 5: stop (block-based heartbeat) ---
+# --- Task 5: stop (heartbeat clock; informational by default since v1.20.0) ---
 
 def _seed_anchor(A, sid, **over):
     upsmod = A.load_hook_module("user-prompt-submit")
-    fields = {"T0": str(int(time.time()) - 3600), "LAST_HEARTBEAT": str(int(time.time()) - 3600),
+    fields = {"T0": str(int(time.time()) - 4 * 3600), "LAST_HEARTBEAT": str(int(time.time()) - 3600),
               "TIER": "T2"}
     fields.update(over)
     upsmod.write_anchor(sid, fields)
     return upsmod
 
 
+def _load_stop(enforced: bool):
+    """Load the Kimi stop adapter with I-9 enforcement on or off.
+
+    The switch is read at import time, so the env var must be set before
+    load() re-executes the module.
+    """
+    if enforced:
+        os.environ["VC_ROE_HEARTBEAT_ENFORCEMENT"] = "1"
+    else:
+        os.environ.pop("VC_ROE_HEARTBEAT_ENFORCEMENT", None)
+    return load("stop.py", "kimi_stop")
+
+
 def t_stop_under_cadence_allows() -> None:
     A = load("_adapter.py", "kimi_adapter")
-    st = load("stop.py", "kimi_stop")
+    st = _load_stop(enforced=False)
     sid = f"ktest-stop1-{os.getpid()}"
     _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 60))
     rc, out, err = run_adapter(st, {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()})
     check("stop: under cadence allows", rc == 0 and not err)
 
 
-def t_stop_overdue_blocks_then_trust_advances() -> None:
+def t_stop_overdue_informational_allows() -> None:
+    """I-9 default: an elapsed cadence never blocks the turn end."""
     A = load("_adapter.py", "kimi_adapter")
-    st = load("stop.py", "kimi_stop")
+    st = _load_stop(enforced=False)
     upsmod = A.load_hook_module("user-prompt-submit")
     sid = f"ktest-stop2-{os.getpid()}"
-    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 20 * 60))  # 20m stale: overdue, under the 2x trust escape
+    # 40m stale: past the 30m cadence, under the 2x escape.
+    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 40 * 60))
     ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
-    rc1, _, err1 = run_adapter(st, ev)
-    check("stop: block 1 (rc2+instruction)", rc1 == 2 and "heartbeat-fired" in err1)
-    rc2, _, err2 = run_adapter(st, ev)
-    check("stop: block 2 (cap boundary)", rc2 == 2)
-    rc3, _, err3 = run_adapter(st, ev)
-    check("stop: cap reached -> allow", rc3 == 0)
+    rc, _, err = run_adapter(st, ev)
+    check("stop: informational allows (no block)", rc == 0 and not err, f"rc={rc} err={err[:60]}")
     anchor = upsmod.read_anchor(sid)
-    check("stop: trust-advanced LAST_HEARTBEAT",
+    check("stop: informational advanced LAST_HEARTBEAT",
           abs(int(anchor["LAST_HEARTBEAT"]) - int(time.time())) < 30)
-    check("stop: STOP_BLOCKS reset", anchor.get("STOP_BLOCKS") == "0")
+    check("stop: informational STOP_BLOCKS zeroed", anchor.get("STOP_BLOCKS") == "0")
+
+
+def t_stop_enforcement_mode_blocks_then_trust_advances() -> None:
+    """I-9 reversibility: the pre-1.20.0 block path is intact behind the switch."""
+    A = load("_adapter.py", "kimi_adapter")
+    st = _load_stop(enforced=True)
+    try:
+        upsmod = A.load_hook_module("user-prompt-submit")
+        sid = f"ktest-stop2e-{os.getpid()}"
+        # 40m stale: past the 30m cadence, under the 2x trust escape.
+        _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 40 * 60))
+        ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
+        rc1, _, err1 = run_adapter(st, ev)
+        check("stop: enforced block 1 (rc2+instruction)", rc1 == 2 and "heartbeat-fired" in err1)
+        check("stop: enforced instruction quotes the 30m cadence", "30m cadence" in err1, err1[:80])
+        rc2, _, err2 = run_adapter(st, ev)
+        check("stop: enforced block 2 (cap boundary)", rc2 == 2)
+        rc3, _, err3 = run_adapter(st, ev)
+        check("stop: enforced cap reached -> allow", rc3 == 0)
+        anchor = upsmod.read_anchor(sid)
+        check("stop: enforced trust-advanced LAST_HEARTBEAT",
+              abs(int(anchor["LAST_HEARTBEAT"]) - int(time.time())) < 30)
+        check("stop: enforced STOP_BLOCKS reset", anchor.get("STOP_BLOCKS") == "0")
+    finally:
+        os.environ.pop("VC_ROE_HEARTBEAT_ENFORCEMENT", None)
 
 
 def t_stop_tier_and_anchor_guards() -> None:
@@ -232,7 +268,7 @@ def t_stop_tier_and_anchor_guards() -> None:
     check("stop: T1 allows (heartbeat is T2+)", rc == 0)
 
 
-ALL_TESTS += [("stop-under-cadence", t_stop_under_cadence_allows), ("stop-block-trust", t_stop_overdue_blocks_then_trust_advances), ("stop-guards", t_stop_tier_and_anchor_guards)]
+ALL_TESTS += [("stop-under-cadence", t_stop_under_cadence_allows), ("stop-informational", t_stop_overdue_informational_allows), ("stop-enforced-block-trust", t_stop_enforcement_mode_blocks_then_trust_advances), ("stop-guards", t_stop_tier_and_anchor_guards)]
 
 
 # --- Task 6: post_tool_use (writer promotion) ---
@@ -281,19 +317,23 @@ ALL_TESTS += [("commands-structure", t_commands_kimi_structure)]
 # --- Final-review hardening: stop trust-2x escape + no-cwd guards ---
 
 def t_stop_trust_2x_escape() -> None:
+    """The 2x escape lives on the enforcement path; exercise it with the switch on."""
     A = load("_adapter.py", "kimi_adapter")
-    st = load("stop.py", "kimi_stop")
-    upsmod = A.load_hook_module("user-prompt-submit")
-    sid = f"ktest-stop2x-{os.getpid()}"
-    # LAST_HEARTBEAT 35 min old (>= 2 * 15m cadence); STOP_BLOCKS absent.
-    _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 35 * 60))
-    ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
-    rc, _, err = run_adapter(st, ev)
-    check("stop: trust-2x escape allows", rc == 0 and not err, f"rc={rc}")
-    anchor = upsmod.read_anchor(sid)
-    check("stop: trust-2x advanced LAST_HEARTBEAT",
-          abs(int(anchor.get("LAST_HEARTBEAT", "0")) - int(time.time())) < 30)
-    check("stop: trust-2x STOP_BLOCKS zeroed", anchor.get("STOP_BLOCKS") == "0")
+    st = _load_stop(enforced=True)
+    try:
+        upsmod = A.load_hook_module("user-prompt-submit")
+        sid = f"ktest-stop2x-{os.getpid()}"
+        # LAST_HEARTBEAT 70 min old (>= 2 * 30m cadence); STOP_BLOCKS absent.
+        _seed_anchor(A, sid, LAST_HEARTBEAT=str(int(time.time()) - 70 * 60))
+        ev = {"hook_event_name": "Stop", "session_id": sid, "cwd": os.getcwd()}
+        rc, _, err = run_adapter(st, ev)
+        check("stop: trust-2x escape allows", rc == 0 and not err, f"rc={rc}")
+        anchor = upsmod.read_anchor(sid)
+        check("stop: trust-2x advanced LAST_HEARTBEAT",
+              abs(int(anchor.get("LAST_HEARTBEAT", "0")) - int(time.time())) < 30)
+        check("stop: trust-2x STOP_BLOCKS zeroed", anchor.get("STOP_BLOCKS") == "0")
+    finally:
+        os.environ.pop("VC_ROE_HEARTBEAT_ENFORCEMENT", None)
 
 
 def _log_since(A, offset: int) -> str:

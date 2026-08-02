@@ -33,6 +33,14 @@ semantics. Sentinel freshness gates the advance (parsed minute must
 exceed current LAST_HEARTBEAT minute) so stale loop-history sentinels
 cannot mask a legitimate cadence miss.
 
+v1.20.0 heartbeat demotion (I-9): cadence 30 min (up from 15), and the
+emitted tag is informational by default. The transcript-grep advance, the
+rate limit and the OVERDUE-2X auto-advance are unchanged; what goes away is
+the paragraph that re-demanded a heartbeat block. Set
+VC_ROE_HEARTBEAT_ENFORCEMENT=1 to restore the pre-1.20.0 demand text. Full
+evidence in the user-prompt-submit.py docstring and the v1.20.0 CHANGELOG
+entry.
+
 Pure stdlib. Never throws. Logs to ~/.claude/methodology-hook.log.
 Tier-aware: short-circuits to no-op at T0/T1.
 """
@@ -57,16 +65,25 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.19.1"
+ROUTINE_VERSION = "1.20.0"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 UPS_MARKER_PREFIX = "claude-methodology-current-session-"
 
-CADENCE_SEC = 15 * 60
-OVERDUE_2X_SEC = 30 * 60
+CADENCE_SEC = 30 * 60  # I-9: 30 min, up from 15 at v1.20.0
+OVERDUE_2X_SEC = 2 * CADENCE_SEC
 PTU_RATE_LIMIT_SEC = 60
 TIER_ACTIVE = {"T2", "T3", "T4"}
+
+# I-9 reversibility switch (v1.20.0); see user-prompt-submit.py for the
+# rationale and the measured evidence. False = informational clock tag only.
+HEARTBEAT_ENFORCEMENT_DEFAULT = False
+HEARTBEAT_ENFORCEMENT = os.environ.get(
+    "VC_ROE_HEARTBEAT_ENFORCEMENT",
+    "1" if HEARTBEAT_ENFORCEMENT_DEFAULT else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+INFORMATIONAL_STATUS = {"OK": "OK", "OVERDUE": "DUE", "OVERDUE-2X": "DUE-2X"}
 
 SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m\]")
 
@@ -1012,13 +1029,18 @@ def main() -> int:
         status = "OVERDUE"
 
     last_hb_display = (last_hb - t0) // 60 if last_hb > 0 else 0
+    tag_status = status if HEARTBEAT_ENFORCEMENT else INFORMATIONAL_STATUS[status]
     clock_tag = (
         f"[session-clock: T+{elapsed_t0_min}m | "
         f"last-heartbeat: T+{last_hb_display}m | "
-        f"next-due: T+{next_due_min}m, {status}] (PostToolUse)"
+        f"next-due: T+{next_due_min}m, {tag_status}] (PostToolUse)"
     )
 
-    if status == "OVERDUE":
+    if not HEARTBEAT_ENFORCEMENT:
+        # I-9: informational only. The clock still surfaces during long
+        # autonomous windows; nothing is demanded of the assistant.
+        ctx = f"<system-reminder>\n{clock_tag}\n</system-reminder>"
+    elif status == "OVERDUE":
         ctx = (
             f"<system-reminder>\n{clock_tag}\n\n"
             "Heartbeat OVERDUE per D-MET-33 surfaced via PostToolUse "
@@ -1080,6 +1102,7 @@ def main() -> int:
         "elapsed_t0_min": elapsed_t0_min,
         "elapsed_since_hb_min": elapsed_hb_min,
         "status": status,
+        "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
         "routine_version": ROUTINE_VERSION,
     })
     return 0

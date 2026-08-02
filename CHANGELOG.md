@@ -4,6 +4,36 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.20.0 - 2026-08-03
+
+Heartbeat demotion (closes I-9) plus a redundancy trim in the T4 slice. The heartbeat machinery stays; what changes is how loudly it speaks and how often it is due.
+
+### Decision record: the heartbeat becomes a clock, not a demand (I-9)
+
+**Evidence.** Measured over the full 78-day hook log, not sampled: the Stop hook failed to find its heartbeat sentinel in **849 of 1,507 checks (56.3%)**. The clock tag read `OVERDUE` **45.7%** of the time, `OVERDUE-2X` **12.8%**, and `OK` only **41.5%**. The machinery itself was correct and cheap, about **1 second of added latency per day across 2,383 invocations**.
+
+**Finding.** The defect was never in the code. A 15-minute wall-clock cadence is not achievable in this working style, so the hook's steady state was overdue flags and fail-safe auto-advances. A signal that fires more often than it is honoured trains its reader to ignore it, and it takes the credibility of every other hook-enforced rule down with it.
+
+**Change.** Two parts, both reversible:
+
+- **Cadence 15 min to 30 min.** `CADENCE_SEC` in `hooks/user-prompt-submit.py`, `hooks/post-tool-use.py` and `hooks/kimi/stop.py`; `OVERDUE_2X_SEC` is now derived (`2 * CADENCE_SEC`) so the two can no longer drift apart. Documented cadence updated in `README.md`, `hooks/hooks.json` and the T2 / T3 / T4 methodology slices.
+- **Enforcement demoted to information.** The elapsed-time tag still goes out on every user turn and during autonomous tool windows, so a session can always see its own clock. What is gone: the paragraph that re-demanded a six-line heartbeat block, the reading of a missing sentinel as a failure, and the Kimi-side turn-end block. Past the cadence the tag now reads `DUE` (or `DUE-2X`), which is a clock state rather than a verdict. The hook log keeps the original `status` word plus a new `enforcement` field, so measurements stay comparable across the change.
+
+**Reversibility.** `HEARTBEAT_ENFORCEMENT` in `hooks/user-prompt-submit.py`, `hooks/post-tool-use.py`, `hooks/stop.py` and `hooks/kimi/stop.py`, default `False`, overridable per session with `VC_ROE_HEARTBEAT_ENFORCEMENT=1`. Nothing was deleted: the demand text, the Kimi block cap and the trust-advance are all intact behind the switch, and `test-heartbeat.py` and `test-kimi-adapter.py` exercise both modes.
+
+**Unchanged:** the sentinel itself, the Stop transcript-grep, the PostToolUse transcript-grep and rate limit, the OVERDUE-2X auto-advance, the silent-stop blocker (a separate mechanism), tier detection, and the methodology obligation to run a session-health heartbeat at T2+.
+
+### Changed
+
+- **`methodology-content/T4.md`: the eleven-element close is stated once.** It had been written out three times, as a numbered list, as a reference-instance table, and again inside the worked example. The numbered list stays as the canonical normative statement, the table stays as the instantiation guide, and the worked example now references the elements by number (977 B to 551 B). One verbatim-duplicated sentence and one restatement of the shape-not-paths rule also removed; both obligations survive in their canonical homes. File 8,578 B to 7,891 B, with no obligation reworded or weakened (proved by section-level sha256 identity plus a sentence-survival ledger run against a retained backup).
+
+### Testing
+
+- `test-heartbeat.py`: 14 cases (was 11). New: informational tag carries no demand, the enforcement switch restores the demand, and 20 minutes now reads OK under the 30-minute cadence.
+- `test-kimi-adapter.py`: the Stop-adapter cases are split into an informational default (never blocks) and an enforcement-mode case (blocks twice, then trust-advances at the cap); the trust-2x escape moved to 70 minutes to match the doubled cadence.
+
+Version: nine constants bumped to 1.20.0 in lockstep (`.claude-plugin/plugin.json`, `ROUTINE_VERSION` in all five hooks, `HARNESS_VERSION` in `bin/publish-audit-combined.sh`, `kimi.plugin.json`, `KIMI_ADAPTER_VERSION`).
+
 ## 1.19.1 - 2026-07-18
 
 Hardening release for the v1.19.0 Kimi dual-harness support: final-review fixes to the Kimi adapters, a docs clarification, and the completed lockstep documentation. No Claude-side hook behaviour changes.

@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-KIMI_ADAPTER_VERSION = "1.19.1"
+KIMI_ADAPTER_VERSION = "1.20.0"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 HOOKS_DIR = Path(__file__).resolve().parent.parent  # the Claude hook modules live here
 
