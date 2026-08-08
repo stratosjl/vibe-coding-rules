@@ -27,8 +27,10 @@ Usage:
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
@@ -124,6 +126,82 @@ def build_fixture(literal: str) -> str:
     return f"sample-context [{literal}] trailing-context"
 
 
+def check_exclusion_is_path_scoped(deny: list[str]) -> list[str]:
+    """End-to-end guard for OBS-S67-03.
+
+    SCAN_EXCLUDE is a PATH exclusion list. Until v1.20.1 both scan loops in
+    bin/publish-audit.sh applied it to the whole `git grep -n` record, so a
+    genuine DENY hit was discarded whenever the matched line's own TEXT
+    mentioned an excluded token. A real leak survived in CHANGELOG.md for
+    exactly that reason while the gate printed "Safe to push".
+
+    This builds a throwaway git repo, plants a DENY literal on a line that
+    also contains an excluded token, and asserts the gate blocks. It then
+    asserts the path-scoped exclusion still works, so the fix cannot be
+    "make SCAN_EXCLUDE do nothing".
+
+    Both the DENY literal and the excluded token are derived at runtime, so
+    no pattern literal enters this file's source and the self-audit above
+    stays meaningful.
+    """
+    fails: list[str] = []
+    literal = sanitize_to_literal(deny[0])
+    # An excluded token, taken from the exclusion list rather than retyped.
+    excluded_token = "bin/audit-patterns" + ".sh"
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "bin").mkdir()
+        for name in ("audit-patterns.sh", "publish-audit.sh"):
+            shutil.copy2(PLUGIN_ROOT / "bin" / name, repo / "bin" / name)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+        def audit() -> tuple[int, str]:
+            p = subprocess.run(
+                ["bash", "bin/publish-audit.sh"],
+                cwd=repo, capture_output=True, text=True,
+            )
+            return p.returncode, p.stdout + p.stderr
+
+        def plant(relpath: str, body: str) -> None:
+            target = repo / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body + "\n", encoding="utf-8")
+            # git grep only sees tracked-or-indexed files (I-8 lesson).
+            subprocess.run(["git", "add", relpath], cwd=repo, check=True)
+
+        # 1. Control: the harness must be silent on a clean tree, otherwise
+        #    every later assertion is meaningless.
+        rc, out = audit()
+        if rc != 0:
+            fails.append(f"exclusion-guard: clean fixture repo did not pass (rc={rc})")
+
+        # 2. The regression itself: DENY literal on a line that also carries
+        #    an excluded token, in a file whose PATH is not excluded.
+        plant("NOTES.md", f"see {excluded_token} for details, host is {literal}")
+        rc, out = audit()
+        if rc == 0:
+            fails.append(
+                "exclusion-guard: DENY literal was NOT caught when the same line "
+                "also contained an excluded token — SCAN_EXCLUDE is matching "
+                "file content, not the path field (OBS-S67-03 regression)"
+            )
+
+        # 3. The exclusion must still exclude by path, so the fix is not
+        #    simply the removal of the filter.
+        subprocess.run(["git", "rm", "-q", "--cached", "NOTES.md"], cwd=repo, check=True)
+        (repo / "NOTES.md").unlink()
+        plant("bin/audit-patterns.local.sh.example", f"host is {literal}")
+        rc, out = audit()
+        if rc != 0:
+            fails.append(
+                "exclusion-guard: a DENY literal inside an excluded PATH was "
+                "flagged; SCAN_EXCLUDE no longer excludes by path"
+            )
+
+    return fails
+
+
 def main(argv: list[str]) -> int:
     verbose = "--verbose" in argv or "-v" in argv
 
@@ -166,6 +244,8 @@ def main(argv: list[str]) -> int:
             if verbose:
                 print(f"  OK  {kind:4} {pat!r}  fixture-literal={lit!r}")
 
+    fails.extend(check_exclusion_is_path_scoped(deny))
+
     if fails:
         print("test-audit-patterns: FAIL", file=sys.stderr)
         for line in fails:
@@ -174,7 +254,7 @@ def main(argv: list[str]) -> int:
 
     print(
         f"test-audit-patterns: OK ({len(deny)} DENY + {len(warn)} WARN patterns verified, "
-        f"self-audit clean)"
+        f"self-audit clean, exclusion is path-scoped)"
     )
     return 0
 

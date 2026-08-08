@@ -4,6 +4,38 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.20.1 - 2026-08-09
+
+Leak-gate correctness. The pre-push audit has been discarding real DENY hits since v1.6.0, and reporting "Safe to push" while doing it.
+
+### The defect
+
+`SCAN_EXCLUDE` is a list of paths never to scan. Both scan loops in `bin/publish-audit.sh` applied it like this:
+
+    matches=$(git grep -nE "$pat" | grep -vE "$SCAN_EXCLUDE" || true)
+
+`git grep -n` emits `path:lineno:content`, so `grep -vE` tested the whole record, file content included. Any matching line whose own text mentioned an excluded token was dropped before it was counted. Since `.git` is one of those tokens and this repository's prose is largely about git hooks, the blind spot was wide rather than theoretical.
+
+It was not hypothetical either: a genuine DENY hit sat in `CHANGELOG.md` and survived every push from every machine, because the offending line said `.githooks` seven times. `bash bin/publish-audit.sh` reported `deny hits: 0` on that tree.
+
+`bin/publish-audit-state.sh` (including its `--history` walk) and `bin/publish-audit-combined.sh` both delegate to `publish-audit.sh`, so all three surfaces carried the same hole and all three are fixed by this one change.
+
+### The fix
+
+- **`bin/publish-audit.sh`**: new `scan_pattern()` helper splits each `git grep -n` record on the first colon and tests the path field alone. Both loops now call it. Repo paths here contain no colon, so the split is unambiguous.
+- **`bin/audit-patterns.sh`**: two `SCAN_EXCLUDE` entries corrected. `\.git` matched any path containing that substring, silently excluding `.gitignore`, `.gitattributes`, and everything under `.github/`; it is narrowed to the `.git/` directory, which `git grep` never returns anyway. `\.gitignore` is removed outright, so that file is scanned again like any other published file.
+- **`test-audit-patterns.py`**: new `check_exclusion_is_path_scoped()` builds a throwaway git repo, plants a DENY literal on a line that also carries an excluded token, and asserts the gate blocks. It then plants the same literal inside an excluded path and asserts the gate stays quiet, so the fix cannot regress into "make `SCAN_EXCLUDE` do nothing". Both the literal and the token are derived at runtime, so the existing self-audit (no pattern literal in the test's own source) still holds. Verified in both directions: the new check fails against the pre-fix script and passes against the fixed one.
+
+### Housekeeping in the same ship
+
+Two identifiers that the broken gate had been hiding were scrubbed from the current tree: one in `CHANGELOG.md` and one in a `.gitignore` comment. No history rewrite; the earlier one orphaned installed plugins on other machines and clobbered tags in the daily sync, which is a poor trade for content that stays fetchable by SHA regardless. The `CHANGELOG.md` entry for v1.6.0 now describes the two generic patterns instead of quoting them, so the stricter gate has nothing to trip on.
+
+Warn-hit count moves from 116 to 120 on this tree. That is not new content; it is four warnings the same bug had been suppressing.
+
+### What this does NOT change
+
+No hook runtime behaviour, no methodology-content change, no detection-rule change, no command surface change. Nine version constants move in lockstep as usual.
+
 ## 1.20.0 - 2026-08-03
 
 Heartbeat demotion (closes I-9) plus a redundancy trim in the T4 slice. The heartbeat machinery stays; what changes is how loudly it speaks and how often it is due.
@@ -361,7 +393,7 @@ Closes `OBS-vcroe-post-commit-sync-log-gap-01` (opened low-severity at s64 when 
 
 What changed:
 
-- **`.githooks/post-commit`, `.githooks/post-merge`, `.githooks/post-checkout` added.** Thin forwarder dispatchers that re-invoke `.git/hooks/post-<event>` if executable and silent-no-op otherwise. v1.8.0 set `core.hooksPath=.githooks` per-clone (via `bin/install-hooks.sh`) to give the cross-machine pre-push hook consistent resolution; that redirect is complete and also bypassed the per-clone `.git/hooks/` directory for every other event. On the operator's main working tree the bypass silently disabled three operator-local hooks installed at LGR s50 — an operator-local mirror-sync chain (`post-commit` / `post-merge` / `post-checkout` → a machine-local sync script). The dispatchers restore fire-through without giving up the v1.8.0 cross-machine pre-push design. Shape per dispatcher: `set -uo pipefail` (no `-e`: silent exit 0 on absent operator-local hook is the intended path on clones that do not have operator-local post-* hooks); resolve repo root via `git rev-parse --show-toplevel`; `exec` the operator-local hook with `"$@"` passing through git's positional args (post-checkout's prev_head / new_head / branch_flag triple, post-merge's is_squash_merge flag) untouched; exit code propagates natively. No `.githooks/post-<event>.d/` extension-directory or logging — premature abstraction; the operator-local hooks already log.
+- **`.githooks/post-commit`, `.githooks/post-merge`, `.githooks/post-checkout` added.** Thin forwarder dispatchers that re-invoke `.git/hooks/post-<event>` if executable and silent-no-op otherwise. v1.8.0 set `core.hooksPath=.githooks` per-clone (via `bin/install-hooks.sh`) to give the cross-machine pre-push hook consistent resolution; that redirect is complete and also bypassed the per-clone `.git/hooks/` directory for every other event. On the operator's main working tree the bypass silently disabled three operator-local hooks installed at an operator project's session 50 — an operator-local mirror-sync chain (`post-commit` / `post-merge` / `post-checkout` → a machine-local sync script). The dispatchers restore fire-through without giving up the v1.8.0 cross-machine pre-push design. Shape per dispatcher: `set -uo pipefail` (no `-e`: silent exit 0 on absent operator-local hook is the intended path on clones that do not have operator-local post-* hooks); resolve repo root via `git rev-parse --show-toplevel`; `exec` the operator-local hook with `"$@"` passing through git's positional args (post-checkout's prev_head / new_head / branch_flag triple, post-merge's is_squash_merge flag) untouched; exit code propagates natively. No `.githooks/post-<event>.d/` extension-directory or logging — premature abstraction; the operator-local hooks already log.
 - **`bin/install-hooks.sh` validation extended.** Adds a symmetric `for HOOK in post-commit post-merge post-checkout` block matching the existing pre-push validation: confirms `.githooks/<name>` is readable, chmod +x if not executable, otherwise exits non-zero on missing file (incomplete clone). No legacy-hook surface message for `.git/hooks/post-*` — those operator-local files are intended to coexist with the dispatcher (the dispatcher forwards to them), not be deprecated. The `core.hooksPath` set logic is unchanged. Closing banner updated to note the dispatcher behaviour.
 - **`ROUTINE_VERSION` bumped to `1.9.1`** across all five hooks (`session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, `session-end.py`); `HARNESS_VERSION` in `bin/publish-audit-combined.sh` bumped to `1.9.1` in lockstep; `.claude-plugin/plugin.json` `version` field bumped to match. Seven version constants total.
 
@@ -468,7 +500,7 @@ The motivation for W2 was already documented at v1.1.4 (the original architectur
 
 What changed:
 
-- **`bin/audit-patterns.sh` rewritten as a public scaffold.** Defines structural code, the generic `WARN_PATTERNS` set (methodology-ID prefixes, supervised-authority abbreviation), `PUBLIC_AUTHOR_EMAIL`, `SCAN_EXCLUDE` (extended to cover the new overlay path), and a minimal generic `DENY_PATTERNS` (only `.internal\b` and `.lan\b`). At source time, the scaffold conditionally sources `bin/audit-patterns.local.sh` if present; the overlay appends operator-flavored entries to `DENY_PATTERNS`. The public file contains zero operator-private content.
+- **`bin/audit-patterns.sh` rewritten as a public scaffold.** Defines structural code, the generic `WARN_PATTERNS` set (methodology-ID prefixes, supervised-authority abbreviation), `PUBLIC_AUTHOR_EMAIL`, `SCAN_EXCLUDE` (extended to cover the new overlay path), and a minimal generic `DENY_PATTERNS` (only two private-network hostname suffixes). At source time, the scaffold conditionally sources `bin/audit-patterns.local.sh` if present; the overlay appends operator-flavored entries to `DENY_PATTERNS`. The public file contains zero operator-private content.
 - **`bin/audit-patterns.local.sh` created (gitignored).** Holds every operator-flavored DENY entry the prior single-file design had baked into `bin/audit-patterns.sh`. The path matches the existing `*.local.*` rule in `.gitignore`; no `.gitignore` change was needed.
 - **`bin/audit-patterns.local.sh.example` created (public).** Template showing the expected overlay shape for any operator who clones the public repo and wants to layer their own private DENY entries on top of the public scaffold.
 - **`bin/publish-audit-state.sh` extended.** Before invoking the inner audit against the temp clone of `origin/main`, the script copies the operator's local `bin/audit-patterns.local.sh` (if present in the source repo) into the temp clone. This preserves operator-flavored coverage on the post-publish state audit without leaking. When run from a fresh public clone with no local overlay, the script falls back to public-scaffold coverage only.

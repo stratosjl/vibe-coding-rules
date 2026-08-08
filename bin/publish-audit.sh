@@ -50,9 +50,25 @@ fi
 deny_hits=0
 warn_hits=0
 
+# v1.20.1 (OBS-S67-03): SCAN_EXCLUDE is a PATH exclusion list, and it must be
+# applied to the path field alone. The previous form piped the whole
+# `git grep -n` record (path:lineno:content) through `grep -vE "$SCAN_EXCLUDE"`,
+# which also matched on file CONTENT. Any leaking line whose text happened to
+# mention an excluded token was therefore dropped before it was counted, and
+# `.git` occurs constantly in this repository's own prose. A real DENY hit in
+# CHANGELOG.md survived every push for that reason while the gate printed
+# "Safe to push". Splitting on the first colon is safe because `git grep -n`
+# always emits the path first and repo paths here contain no colon.
+scan_pattern() {
+  git grep -nE "$1" 2>/dev/null | while IFS= read -r line; do
+    path=${line%%:*}
+    printf '%s' "$path" | grep -qE "$SCAN_EXCLUDE" || printf '%s\n' "$line"
+  done
+}
+
 hdr "scanning for hard-deny patterns"
 for pat in "${DENY_PATTERNS[@]}"; do
-  matches=$(git grep -nE "$pat" 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
+  matches=$(scan_pattern "$pat" || true)
   if [ -n "$matches" ]; then
     hit "DENY pattern '$pat':"
     echo "$matches" | sed 's/^/    /'
@@ -62,7 +78,7 @@ done
 
 hdr "scanning for warning patterns"
 for pat in "${WARN_PATTERNS[@]}"; do
-  matches=$(git grep -nE "$pat" 2>/dev/null | grep -vE "$SCAN_EXCLUDE" || true)
+  matches=$(scan_pattern "$pat" || true)
   if [ -n "$matches" ]; then
     hit "WARN pattern '$pat':"
     echo "$matches" | sed 's/^/    /'

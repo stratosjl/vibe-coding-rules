@@ -31,5 +31,5 @@ methodology-content/residency-routing.md
 # operator-private per-project memory - never publish to this public repo (restored after v1.17.0 regression)
 memory/
 
-# operator-private HAM overlay slice; retired 2026-06-24, never publish to this public repo
+# operator-private tier-addon overlay slice; retired 2026-06-24, never publish to this public repo
 methodology-content/T4-ham.md

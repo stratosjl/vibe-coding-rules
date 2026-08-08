@@ -63,7 +63,20 @@ PUBLIC_AUTHOR_EMAIL='stratosjl@gmail.com'
 # the audit infrastructure itself (which contains the deny patterns and
 # would self-match), and the local overlay (which contains operator-
 # flavored DENY entries by design).
-SCAN_EXCLUDE='(__pycache__|\.git|\.gitignore|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh|bin/audit-patterns\.local\.sh|bin/audit-patterns\.local\.sh\.example)'
+#
+# v1.20.1 (OBS-S67-03): two entries were corrected here.
+#   - `\.git` matched any path CONTAINING that substring, so it silently
+#     excluded `.gitignore`, `.gitattributes`, and everything under
+#     `.github/`. Narrowed to the `.git/` directory itself, which
+#     `git grep` never returns anyway, so the entry is now belt-and-braces
+#     rather than a hole.
+#   - `\.gitignore` was listed outright. It is a published file like any
+#     other and it was on this list only because it names the overlay
+#     filenames, which the operator-specific entries above already cover.
+#     Removed, so `.gitignore` is scanned again.
+# Consumers must apply this regex to the PATH field only; see the
+# scan_pattern() note in bin/publish-audit.sh.
+SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh|bin/audit-patterns\.local\.sh|bin/audit-patterns\.local\.sh\.example)'
 
 # Source the operator-local private overlay if present. The overlay
 # appends operator-flavored patterns to DENY_PATTERNS via array-append.

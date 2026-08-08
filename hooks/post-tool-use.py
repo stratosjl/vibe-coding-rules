@@ -65,7 +65,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.20.0"
+ROUTINE_VERSION = "1.20.1"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
