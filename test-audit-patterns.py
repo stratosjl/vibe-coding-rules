@@ -183,7 +183,7 @@ def check_exclusion_is_path_scoped(deny: list[str]) -> list[str]:
         if rc == 0:
             fails.append(
                 "exclusion-guard: DENY literal was NOT caught when the same line "
-                "also contained an excluded token — SCAN_EXCLUDE is matching "
+                "also contained an excluded token: SCAN_EXCLUDE is matching "
                 "file content, not the path field (OBS-S67-03 regression)"
             )
 
