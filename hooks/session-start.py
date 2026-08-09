@@ -74,7 +74,7 @@ DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 
-ROUTINE_VERSION = "1.20.1"
+ROUTINE_VERSION = "1.20.2"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows; macOS gap documented in README "Platform coverage notes"
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 TIER_FLOOR_FILENAME = "methodology-tier-floor"
@@ -491,7 +491,7 @@ def read_claim(cwd: Path) -> Optional[dict[str, Any]]:
 
 
 def write_claim(cwd: Path, session_id: str, ts: int, host: str,
-                pid: int, pid_starttime: Optional[str], boot_id: str,
+                pid: Optional[int], pid_starttime: Optional[str], boot_id: str,
                 mode: str = MODE_READER,
                 writer_session_id: Optional[str] = None,
                 writer_acquired_ts: Optional[int] = None,
@@ -504,6 +504,14 @@ def write_claim(cwd: Path, session_id: str, ts: int, host: str,
     pid_starttime may be None on platforms where it can't be read (macOS);
     in that case the field is stored as null and evaluate_claim falls back to
     the simpler is_pid_alive probe.
+
+    v1.20.2 (OBS-S67-01): pid is now Optional and callers in this repo pass
+    None. A hook subprocess cannot record a pid that outlives itself, and a
+    dead pid made evaluate_claim short-circuit to take-orphan before its TTL,
+    reader-coexist and refuse branches. Writing null puts the claim on the
+    legacy TTL + boot_id path, which is correct rather than merely quieter.
+    The parameter is kept so a caller that CAN prove a long-lived pid may
+    supply one later without a schema change.
 
     v1.10.0 (F-63-01 Layer 2): schema gains mode + writer_session_id +
     writer_acquired_ts + writer_last_mutation_ts + writer_idle_demote_seconds.
@@ -1135,8 +1143,30 @@ def main() -> int:
             except Exception:
                 host = "?"
             our_boot_id = read_boot_id()
-            our_pid = os.getpid()
-            our_pid_starttime = read_pid_starttime(our_pid)
+            # v1.20.2 (OBS-S67-01): do NOT record os.getpid() here. This hook
+            # is a short-lived subprocess that exits within milliseconds of
+            # writing the claim, so the pid it recorded was already dead by
+            # the time any other session read it. evaluate_claim's same-host
+            # branch then returned take-orphan ("pid-dead") BEFORE the TTL
+            # check, the reader-coexist branch and the refuse branch could be
+            # reached, so all three were unreachable for every claim written
+            # since v1.9.0. The multi-chat protection was inert, and worse,
+            # it logged a confident "the other session is dead" every time.
+            #
+            # os.getppid() is not the answer either: a "type": "command" hook
+            # is spawned through a wrapper that dies with it, and that spawn
+            # shape is undocumented and differs per harness and per OS. A pid
+            # is only worth recording if it provably belongs to a process
+            # that outlives the hook, and this hook cannot establish that.
+            # So record nothing: the claim falls through to the boot_id probe
+            # plus TTL, which is the well-tested v1.3.0..v1.8.1 path that
+            # read_claim and evaluate_claim still support in full.
+            #
+            # The READ side is deliberately left intact, so claims written by
+            # v1.9.0..v1.20.2 keep their existing semantics while machines
+            # upgrade at their own pace.
+            our_pid = None
+            our_pid_starttime = None
             existing_claim = read_claim(cwd)
             claim_action, claim_info = evaluate_claim(
                 existing_claim, session_id, int(started), ttl_hours,

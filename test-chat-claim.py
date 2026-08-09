@@ -591,6 +591,81 @@ def case_session_start_writes_reader_mode(home: Path, tmp: Path) -> None:
               isinstance(claim.get("writer_idle_demote_seconds"), int))
 
 
+def pid_is_alive(pid: int) -> bool:
+    """True if pid currently exists. Used only to prove a recorded pid is dead."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except Exception:
+        return False
+
+
+def case_hook_written_claim_is_not_self_orphaning(home: Path, tmp: Path) -> None:
+    """OBS-S67-01 regression: a claim written by a real hook run must not be
+    read as dead by the next session.
+
+    Every other liveness case in this file FABRICATES a claim and hands the
+    read side a pid it chose. That is why they all passed while the feature
+    was inert: the defect was on the WRITE side. SessionStart recorded
+    os.getpid(), its own subprocess, which exits milliseconds later, so
+    evaluate_claim's same-host branch returned take-orphan ("pid-dead")
+    before the TTL, reader-coexist and refuse branches could be reached.
+
+    Pre-fix this case fails at "second session did not orphan the claim":
+    session B silently seizes A's claim. Post-fix B coexists as a reader and
+    A keeps the claim.
+    """
+    print("\n[case] hook-written claim survives the hook's own exit (OBS-S67-01)")
+    cwd = make_test_cwd(tmp, "proj-s67-01-selforphan")
+    sid_a = str(uuid.uuid4())
+    sid_b = str(uuid.uuid4())
+    cp = claim_path(home, cwd)
+
+    rc, out, err = run_hook(SESSION_START, {"session_id": sid_a, "cwd": str(cwd),
+                                            "source": "startup"}, home)
+    check("session A rc == 0", rc == 0, err[:200])
+    claim = read_claim(cp)
+    check("session A wrote a claim", claim is not None, f"path={cp}")
+    if claim is None:
+        return
+
+    # The hook subprocess is gone by now. Any pid it recorded is therefore a
+    # dead pid, which is exactly what the read side cannot interpret.
+    recorded_pid = claim.get("pid", None)
+    check("claim does not carry a pid that is already dead",
+          recorded_pid is None or pid_is_alive(int(recorded_pid)),
+          f"claim recorded pid={recorded_pid}, which no longer exists; "
+          f"evaluate_claim will read it as pid-dead and orphan the claim")
+
+    # Second, different session on the same project, well within TTL.
+    rc, out, err = run_hook(SESSION_START, {"session_id": sid_b, "cwd": str(cwd),
+                                            "source": "startup"}, home)
+    check("session B rc == 0", rc == 0, err[:200])
+    # Match the rendered trace line, not a JSON spelling. The trace emits
+    # "- chat_claim_action: <action>"; asserting against '"chat_claim_action":
+    # "take-orphan"' would never match anything and would pass vacuously,
+    # which is not evidence.
+    check("trace line for chat_claim_action is present at all",
+          "- chat_claim_action:" in out,
+          f"cannot assert on an action the trace never rendered; "
+          f"out-tail={out[-400:]}")
+    check("second session did not orphan the claim",
+          "- chat_claim_action: take-orphan" not in out,
+          f"trace says take-orphan; out-tail={out[-400:]}")
+    after = read_claim(cp)
+    check("session A still owns the claim",
+          after is not None and after.get("session_id") == sid_a,
+          f"owner is now {after.get('session_id') if after else None}, "
+          f"expected {sid_a}")
+    check("second session coexists as reader",
+          "- chat_claim_action: reader-coexist" in out,
+          f"out-tail={out[-400:]}")
+
+
 def case_reader_coexist_no_overwrite(home: Path, tmp: Path) -> None:
     print("\n[case] alive other-reader -> coexist (no overwrite, no refusal) (Layer 2)")
     cwd = make_test_cwd(tmp, "proj-l2-reader-coexist")
@@ -900,6 +975,8 @@ def main() -> int:
         # v1.10.0 (F-63-01) Layer 2 cases
         case_session_start_writes_reader_mode(home, tmp)
         case_reader_coexist_no_overwrite(home, tmp)
+        # v1.20.2 (OBS-S67-01) write-side liveness regression
+        case_hook_written_claim_is_not_self_orphaning(home, tmp)
         case_writer_promote_on_watched_path_edit(home, tmp)
         case_writer_promote_on_git_mutation_bash(home, tmp)
         case_writer_refresh_on_second_write(home, tmp)

@@ -4,6 +4,44 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## 1.20.2 - 2026-08-09
+
+Two controls that were reporting confidently wrong answers. The chat-claim liveness probe declared every other session dead, and the history walk graded old commits with old graders.
+
+### Chat-claim liveness (OBS-S67-01)
+
+`hooks/session-start.py` recorded `os.getpid()` into the claim. That is the hook's own subprocess, which exits milliseconds after writing the file, so the recorded pid was already dead by the time any other session read it. In `evaluate_claim()` the same-host branch then returned `take-orphan` with reason `pid-dead` **before** the TTL check, the `reader-coexist` branch and the `refuse` branch could be reached. All three have therefore been unreachable for every claim written since v1.9.0: a second chat opened on the same project silently seized the claim, and the log recorded a confident "the other session is dead" each time.
+
+`hooks/post-tool-use.py` carried the same defect at the writer-promotion path, where it meant a live concurrent writer was displaced instead of reaching the `conflict` branch. That second site was not in the original issue and was found by grepping for the bug-class symbol before sizing the fix.
+
+The fix records no pid at all. `os.getppid()` was considered and rejected: a `"type": "command"` hook is spawned through a wrapper that dies with it, and that spawn shape is undocumented and differs per harness and per OS, so adopting it would mean resting a security-adjacent control on an assumption that fails silently on the platforms hardest to observe. A pid is worth recording only when it provably belongs to a process that outlives the hook, and the hook cannot establish that. With the field null, claims fall through to the `boot_id` probe plus TTL, which is the well-tested v1.3.0 to v1.8.1 path the read side still supports in full.
+
+Behaviour change worth knowing: a session that dies without firing SessionEnd now parks its claim until the TTL expires (8h default, `VC_ROE_CLAIM_TTL_HOURS` to override) instead of being auto-orphaned. A host reboot still auto-orphans via `boot_id`. This is fail-closed, and the refusal banner is advisory rather than fatal. It is also not a regression: the auto-orphan path being replaced never worked, it merely always fired.
+
+The read side is deliberately untouched, so claims written by v1.9.0 to v1.20.1 keep their existing semantics while machines upgrade at their own pace.
+
+`test-chat-claim.py` gains `case_hook_written_claim_is_not_self_orphaning()`. Every pre-existing liveness case fabricates a claim and hands the read side a pid of its choosing, which is exactly why they all passed while the feature was inert: the defect was on the write side. The new case runs the real hook, then runs it again as a different session, and asserts the first session still owns the claim. Verified in both directions: against the pre-fix hook it fails on four checks and shows session B seizing the claim.
+
+### History walk (OBS-S67-04)
+
+`bin/publish-audit-state.sh --history` checked out each commit and ran **that commit's** audit script. An early leak scrub wrote bracketed placeholders into the DENY arrays of the day, and a pattern written as `[SOME-NAME]` is not a literal: as an ERE it is a character class matching any one of those letters. Those commits scanned themselves with a near-universal matcher and reported floods of hits on ordinary prose, including their own JSON `"name"` fields. The walk's verdict was noise in both directions.
+
+It was also the wrong question. "Does this old content violate today's classification" is what the walk is for, not "did the script of the day think so at the time". So the tree now varies per commit and the scanner does not: the current `publish-audit.sh` plus the current pattern set are pinned at HEAD before any checkout and copied into each commit's tree. All pinned paths sit inside `SCAN_EXCLUDE`, so restoring them cannot change what the scan sees.
+
+### Accepted-history baseline
+
+Pinning the scanner correctly surfaces content that was scrubbed at HEAD but is still reachable by SHA in older commits, which on this repository is 44 commits' worth. Reporting that as failure on every run would leave the signal permanently red, and a permanently-red light stops being read.
+
+`bin/audit-history-baseline.txt` therefore enumerates accepted `(path, pattern)` pairs. It is a baseline, not a threshold: a finding is forgiven only when its exact pair is listed **and** the commit is an ancestor of the recorded `baseline-sha`. Every deny hit must be accounted for line by line, so a deny that produces no parseable pair (the HEAD-author-email check, for instance) still fails the commit. A new commit reintroducing a listed pair still fails, and an old commit carrying an unlisted pair still fails.
+
+Operator-flavoured pairs live in the gitignored `bin/audit-history-baseline.local.txt`, for the same reason operator-flavoured DENY patterns live in `bin/audit-patterns.local.sh`: a public file naming a private identifier is itself the leak. Both baseline files join `SCAN_EXCLUDE`, since by design they quote pattern literals and would otherwise self-match, the same argument that already covers the audit scripts.
+
+`test-audit-patterns.py` gains two checks. `check_history_walk_pins_current_scanner()` builds an origin repo whose older commit ships a placeholder-bearing scanner and asserts the walk reports clean. `check_history_baseline_is_enumerated()` asserts all three behaviours: the listed pair inside the window is forgiven, an unlisted pair is not, and a listed pair in a commit newer than `baseline-sha` is not. Both were verified by mutation: removing the ancestor cutoff turns the third red, and counting every hit as baselined turns the second red.
+
+### What this does NOT change
+
+No methodology-content change, no detection-rule change, no command surface change, no DENY or WARN pattern change. Warn-hit count stays at 120. Nine version constants move in lockstep as usual.
+
 ## 1.20.1 - 2026-08-09
 
 Leak-gate correctness. The pre-push audit has been discarding real DENY hits since v1.6.0, and reporting "Safe to push" while doing it.

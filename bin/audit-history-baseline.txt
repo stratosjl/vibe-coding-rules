@@ -1,0 +1,38 @@
+# audit-history-baseline.txt: accepted findings in published history.
+#
+# v1.20.2 (OBS-S67-04). `bin/publish-audit-state.sh --history` now runs the
+# CURRENT scanner against every commit's tree, which is the only sensible
+# reading of "does this old content violate today's classification". Doing so
+# correctly surfaces content that was scrubbed at HEAD but is still reachable
+# by direct SHA in history. That residue was accepted knowingly rather than
+# rewritten away, so the walk needs to distinguish "known and accepted" from
+# "new", or it goes permanently red and stops being read.
+#
+# This is an ENUMERATED BASELINE, not a raised threshold. A finding is
+# accepted only when BOTH hold:
+#
+#   1. its (path, pattern) pair is listed below, and
+#   2. the commit is an ancestor of baseline-sha.
+#
+# So a new commit that reintroduces a listed pair still fails, and an old
+# commit carrying an unlisted pair still fails. Anything the walk cannot
+# account for line-for-line fails. Do not add rows to silence a fresh
+# finding; a fresh finding means scrub at HEAD, as v1.20.1 did.
+#
+# Operator-flavoured pairs do NOT belong in this file. They live in the
+# gitignored bin/audit-history-baseline.local.txt, for the same reason
+# operator-flavoured DENY patterns live in bin/audit-patterns.local.sh: a
+# public file naming a private identifier is itself the leak. Both files are
+# in SCAN_EXCLUDE because, by design, they contain pattern literals.
+#
+# Format: <path><TAB><pattern>, one accepted pair per line. '#' comments.
+#
+# baseline-sha: 55263de04dfe26656d6d27eb56305ee42ca087bc
+#
+# The two rows below are the changelog quoting the names of the two generic
+# patterns that ship in bin/audit-patterns.sh, in an entry describing the
+# audit system itself. Same benign self-reference class as the audit scripts.
+# Scrubbed at HEAD in v1.20.1; present in the commits before it.
+
+CHANGELOG.md	\.internal\b
+CHANGELOG.md	\.lan\b

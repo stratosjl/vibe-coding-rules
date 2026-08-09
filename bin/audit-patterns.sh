@@ -74,9 +74,15 @@ PUBLIC_AUTHOR_EMAIL='stratosjl@gmail.com'
 #     other and it was on this list only because it names the overlay
 #     filenames, which the operator-specific entries above already cover.
 #     Removed, so `.gitignore` is scanned again.
+# v1.20.2 (OBS-S67-04): bin/audit-history-baseline.txt and its .local.
+# companion join the list. They enumerate accepted (path, pattern) pairs in
+# published history, so they necessarily quote pattern literals and would
+# self-match, exactly like the audit scripts above. This is an infrastructure
+# exclusion by the same argument, not a widening of the list.
+#
 # Consumers must apply this regex to the PATH field only; see the
 # scan_pattern() note in bin/publish-audit.sh.
-SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh|bin/audit-patterns\.local\.sh|bin/audit-patterns\.local\.sh\.example)'
+SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-audit\.sh|bin/publish-audit-state\.sh|bin/audit-patterns\.sh|bin/audit-patterns\.local\.sh|bin/audit-patterns\.local\.sh\.example|bin/audit-history-baseline\.txt|bin/audit-history-baseline\.local\.txt)'
 
 # Source the operator-local private overlay if present. The overlay
 # appends operator-flavored patterns to DENY_PATTERNS via array-append.

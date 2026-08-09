@@ -202,6 +202,212 @@ def check_exclusion_is_path_scoped(deny: list[str]) -> list[str]:
     return fails
 
 
+def extract_scalar(var_name: str) -> str:
+    cmd = [
+        "bash",
+        "-c",
+        f'set -e; cd "{PLUGIN_ROOT}"; source bin/audit-patterns.sh; '
+        f'printf "%s" "${{{var_name}}}"',
+    ]
+    return subprocess.check_output(cmd, text=True)
+
+
+def check_history_walk_pins_current_scanner() -> list[str]:
+    """End-to-end guard for OBS-S67-04.
+
+    `bin/publish-audit-state.sh --history` checked out each commit and then
+    ran THAT COMMIT'S scanner. Old scanners in this repo's history carry a
+    bracketed placeholder in their DENY array, left behind by an early leak
+    scrub. A pattern written as [SOME-NAME] is not a literal: as an ERE it is
+    a character class matching any one of those letters, so those commits
+    scanned themselves with a near-universal matcher and reported floods of
+    hits on ordinary prose. The walk's verdict was noise in both directions.
+
+    Fixture: an origin repo on `main` with two commits. The older one ships a
+    scanner whose DENY array holds a bracketed placeholder; HEAD ships the
+    current scanner. Neither tree contains a real leak, so a trustworthy walk
+    reports clean. Pre-fix, the old commit self-matches and the walk reports
+    a historical leak.
+
+    The placeholder is assembled at runtime so no bracketed token enters this
+    file's source, where the real gate would later scan it.
+    """
+    fails: list[str] = []
+    state_script = PLUGIN_ROOT / "bin" / "publish-audit-state.sh"
+    if not state_script.is_file():
+        return ["history-walk-guard: bin/publish-audit-state.sh not found"]
+
+    author = extract_scalar("PUBLIC_AUTHOR_EMAIL").strip()
+    if not author:
+        return ["history-walk-guard: PUBLIC_AUTHOR_EMAIL is empty"]
+
+    placeholder = "[" + "REDACTED" + "-" + "NAME" + "]"
+    # Innocuous prose. It contains letters that the placeholder-as-character
+    # class matches, which is the whole point: nothing here is a real leak.
+    prose = "PROJECT NOTES\n\nOrdinary README content, no operator identifiers.\n"
+
+    stale_patterns = (
+        "#!/usr/bin/env bash\n"
+        f"PUBLIC_AUTHOR_EMAIL='{author}'\n"
+        f"DENY_PATTERNS=( '{placeholder}' )\n"
+        "WARN_PATTERNS=( 'zzz-never-matches-anything-zzz' )\n"
+        "SCAN_EXCLUDE='(__pycache__|(^|/)\\.git/|bin/publish-audit\\.sh"
+        "|bin/publish-audit-state\\.sh|bin/audit-patterns\\.sh)'\n"
+    )
+
+    def git(repo: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True,
+                       capture_output=True, text=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        origin = root / "origin"
+        origin.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=origin, check=True)
+        git(origin, "config", "user.email", author)
+        git(origin, "config", "user.name", "audit-fixture")
+        git(origin, "config", "commit.gpgsign", "false")
+        (origin / "bin").mkdir()
+
+        # Commit 1: the stale scanner, with the placeholder DENY entry.
+        shutil.copy2(PLUGIN_ROOT / "bin" / "publish-audit.sh",
+                     origin / "bin" / "publish-audit.sh")
+        (origin / "bin" / "audit-patterns.sh").write_text(
+            stale_patterns, encoding="utf-8")
+        (origin / "README.md").write_text(prose, encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "old commit with stale scanner")
+
+        # Commit 2 (HEAD): the current scanner.
+        shutil.copy2(PLUGIN_ROOT / "bin" / "audit-patterns.sh",
+                     origin / "bin" / "audit-patterns.sh")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "current scanner")
+
+        work = root / "work"
+        subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True)
+        git(work, "config", "user.email", author)
+        git(work, "config", "user.name", "audit-fixture")
+
+        proc = subprocess.run(
+            ["bash", str(state_script), "--history"],
+            cwd=work, capture_output=True, text=True, timeout=300,
+        )
+        out = proc.stdout + proc.stderr
+        if proc.returncode != 0 or "history walk clean" not in out:
+            fails.append(
+                "history-walk-guard: the walk reported a historical leak on a "
+                "fixture whose only 'hit' is an old commit's own placeholder "
+                "DENY pattern being read as a character class. The walk must "
+                "run the CURRENT scanner against each commit's tree "
+                "(OBS-S67-04 regression). "
+                f"rc={proc.returncode} tail={out[-400:]!r}"
+            )
+
+    return fails
+
+
+def check_history_baseline_is_enumerated(deny: list[str]) -> list[str]:
+    """Negative tests for the v1.20.2 accepted-history baseline (OBS-S67-04).
+
+    The baseline exists so a walk that correctly reports knowingly-accepted
+    residue does not go permanently red. That makes it a forgiveness
+    mechanism, and a forgiveness mechanism nobody has watched refuse is
+    indistinguishable from a switch that turns the check off. So all three
+    are asserted here: it forgives the listed pair, it refuses a pair it does
+    not list, and it refuses even a listed pair once the commit is newer than
+    baseline-sha.
+
+    Fixture history on `main`: A clean, B carrying a DENY literal, C clean.
+    """
+    fails: list[str] = []
+    state_script = PLUGIN_ROOT / "bin" / "publish-audit-state.sh"
+    if not state_script.is_file():
+        return ["history-baseline-guard: bin/publish-audit-state.sh not found"]
+
+    author = extract_scalar("PUBLIC_AUTHOR_EMAIL").strip()
+    pattern = deny[0]
+    literal = sanitize_to_literal(pattern)
+
+    def git(repo: Path, *args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        origin = root / "origin"
+        origin.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=origin, check=True)
+        git(origin, "config", "user.email", author)
+        git(origin, "config", "user.name", "audit-fixture")
+        git(origin, "config", "commit.gpgsign", "false")
+        (origin / "bin").mkdir()
+        for name in ("audit-patterns.sh", "publish-audit.sh"):
+            shutil.copy2(PLUGIN_ROOT / "bin" / name, origin / "bin" / name)
+
+        (origin / "README.md").write_text("clean\n", encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "A: clean")
+        sha_a = git(origin, "rev-parse", "HEAD")
+
+        (origin / "README.md").write_text(f"host is {literal}\n", encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "B: carries the literal")
+        sha_b = git(origin, "rev-parse", "HEAD")
+
+        (origin / "README.md").write_text("clean again\n", encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "C: scrubbed at HEAD")
+
+        work = root / "work"
+        subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True)
+        git(work, "config", "user.email", author)
+        git(work, "config", "user.name", "audit-fixture")
+
+        baseline = work / "bin" / "audit-history-baseline.txt"
+
+        def walk() -> tuple[int, str]:
+            p = subprocess.run(["bash", str(state_script), "--history"],
+                               cwd=work, capture_output=True, text=True,
+                               timeout=300)
+            return p.returncode, p.stdout + p.stderr
+
+        def write_baseline(sha: str, path_col: str) -> None:
+            baseline.write_text(
+                f"# baseline-sha: {sha}\n{path_col}\t{pattern}\n", encoding="utf-8")
+
+        # 1. Listed pair, commit within the baseline window: forgiven.
+        write_baseline(sha_b, "README.md")
+        rc, out = walk()
+        if rc != 0 or "history walk clean" not in out:
+            fails.append(
+                "history-baseline-guard: a listed (path, pattern) pair inside "
+                f"the baseline window was still reported as a leak. rc={rc} "
+                f"tail={out[-300:]!r}")
+
+        # 2. Same finding, pair NOT listed: must still fail.
+        write_baseline(sha_b, "SOMETHING-ELSE.md")
+        rc, out = walk()
+        if rc == 0 or "historical leak" not in out:
+            fails.append(
+                "history-baseline-guard: a DENY hit whose (path, pattern) pair "
+                "is NOT in the baseline was forgiven. The baseline is behaving "
+                "as an off switch rather than as an enumeration.")
+
+        # 3. Listed pair, but the commit is NEWER than baseline-sha: must fail,
+        #    otherwise the baseline would forgive a fresh reintroduction.
+        write_baseline(sha_a, "README.md")
+        rc, out = walk()
+        if rc == 0 or "historical leak" not in out:
+            fails.append(
+                "history-baseline-guard: a listed pair was forgiven in a commit "
+                f"that is NOT an ancestor of baseline-sha ({sha_a[:12]}); the "
+                f"finding is in {sha_b[:12]}. A new commit could reintroduce an "
+                "accepted identifier and pass.")
+
+    return fails
+
+
 def main(argv: list[str]) -> int:
     verbose = "--verbose" in argv or "-v" in argv
 
@@ -209,11 +415,11 @@ def main(argv: list[str]) -> int:
         deny = extract_patterns("DENY_PATTERNS")
         warn = extract_patterns("WARN_PATTERNS")
     except subprocess.CalledProcessError as exc:
-        print(f"test-audit-patterns: FAIL — could not source audit-patterns.sh: {exc}", file=sys.stderr)
+        print(f"test-audit-patterns: FAIL, could not source audit-patterns.sh: {exc}", file=sys.stderr)
         return 1
 
     if not deny:
-        print("test-audit-patterns: FAIL — DENY_PATTERNS array empty", file=sys.stderr)
+        print("test-audit-patterns: FAIL, DENY_PATTERNS array empty", file=sys.stderr)
         return 1
 
     own_source = Path(__file__).read_text(encoding="utf-8")
@@ -237,7 +443,7 @@ def main(argv: list[str]) -> int:
                 continue
             if lit in own_source:
                 fails.append(
-                    f"{kind} {pat!r}: literal {lit!r} appears in test source — "
+                    f"{kind} {pat!r}: literal {lit!r} appears in test source: "
                     f"audit gate hole risk; refactor to keep literal out of source."
                 )
                 continue
@@ -245,6 +451,8 @@ def main(argv: list[str]) -> int:
                 print(f"  OK  {kind:4} {pat!r}  fixture-literal={lit!r}")
 
     fails.extend(check_exclusion_is_path_scoped(deny))
+    fails.extend(check_history_walk_pins_current_scanner())
+    fails.extend(check_history_baseline_is_enumerated(deny))
 
     if fails:
         print("test-audit-patterns: FAIL", file=sys.stderr)
@@ -254,7 +462,8 @@ def main(argv: list[str]) -> int:
 
     print(
         f"test-audit-patterns: OK ({len(deny)} DENY + {len(warn)} WARN patterns verified, "
-        f"self-audit clean, exclusion is path-scoped)"
+        f"self-audit clean, exclusion is path-scoped, history walk pins the "
+        f"current scanner)"
     )
     return 0
 

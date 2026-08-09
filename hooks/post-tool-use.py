@@ -65,7 +65,7 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.20.1"
+ROUTINE_VERSION = "1.20.2"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -533,7 +533,7 @@ def evaluate_writer_promotion(claim: Optional[dict[str, Any]], our_session: str,
 
 def promote_or_refresh_writer(claim_path: Path, claim: Optional[dict[str, Any]],
                               action: str, our_session: str, our_host: str,
-                              our_boot_id: str, our_pid: int,
+                              our_boot_id: str, our_pid: Optional[int],
                               our_pid_starttime: Optional[str],
                               now: int) -> bool:
     """Write the post-promotion / post-refresh claim. Returns True on success.
@@ -669,7 +669,15 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
     except Exception:
         our_host = "?"
     our_boot_id = read_boot_id()
-    our_pid = os.getpid()
+    # v1.20.2 (OBS-S67-01): the second of the two sites that recorded a hook
+    # subprocess pid into the claim. Same defect and same reasoning as
+    # session-start.py: a dead pid made evaluate_writer_promotion return
+    # "writer-take-orphan-pid-dead", so a live concurrent writer was silently
+    # displaced instead of reaching the "conflict" branch. hook_pid stays for
+    # the lease ledger, where a per-invocation pid is honest diagnostic data
+    # and is never read back as a liveness signal.
+    hook_pid = os.getpid()
+    our_pid = None
 
     action, info = evaluate_writer_promotion(claim, session_id, our_host, our_boot_id)
 
@@ -700,7 +708,7 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
             "other_writer": info.get("other_writer", ""),
             "other_host": info.get("other_host", ""),
             "host": our_host,
-            "pid": our_pid,
+            "pid": hook_pid,
             "routine_version": ROUTINE_VERSION,
         })
         append_log({
@@ -717,7 +725,7 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
         return writer_conflict_banner(info, target_kind, target)
 
     # promote / refresh: write claim + ledger acquire/refresh row.
-    our_pid_starttime = read_pid_starttime(our_pid)
+    our_pid_starttime = None  # v1.20.2 (OBS-S67-01), see above
     promote_or_refresh_writer(
         cp, claim, action, session_id, our_host, our_boot_id,
         our_pid, our_pid_starttime, now,
@@ -726,7 +734,7 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
         "ts": now,
         "session_id": session_id,
         "host": our_host,
-        "pid": our_pid,
+        "pid": hook_pid,
         "tool_name": tool_name,
         "target_kind": target_kind,
         "target": target,

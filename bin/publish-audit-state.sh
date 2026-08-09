@@ -177,15 +177,140 @@ fi
 
 if [ "$WALK_HISTORY" -eq 1 ]; then
   history_walked=1
+
+  # v1.20.2 (OBS-S67-04): pin the scanner to the CURRENT one.
+  #
+  # The walk used to check out each commit and run whatever audit script that
+  # commit happened to ship. An early leak scrub in this repo's own history
+  # replaced two codenames with bracketed placeholders and wrote those
+  # placeholders into the DENY arrays of the day. A pattern written as
+  # [SOME-NAME] is not a literal: as an ERE it is a character class matching
+  # any one of those letters, so every such commit scanned itself with a
+  # near-universal matcher and reported floods of hits on ordinary prose,
+  # including its own JSON "name" fields. The reported count was noise.
+  #
+  # It is also the wrong question. "Does this old content violate today's
+  # classification" is what the walk is for, not "did the script of the day
+  # think so at the time". So the tree varies per commit and the scanner does
+  # not. The pin is taken at HEAD, before any checkout moves the tree.
+  PINNED_DIR="$TMPDIR/pinned"
+  mkdir -p "$PINNED_DIR"
+  cp -f "$CLONED_AUDIT" "$PINNED_DIR/publish-audit.sh"
+  cp -f "$CLONED_PATTERNS" "$PINNED_DIR/audit-patterns.sh"
+  if [ -r "$TMPDIR/repo/bin/audit-patterns.local.sh" ]; then
+    cp -f "$TMPDIR/repo/bin/audit-patterns.local.sh" "$PINNED_DIR/audit-patterns.local.sh"
+  fi
+  hdr "history scanner pinned to public HEAD ($PUBLIC_HEAD_SHA)"
+
+  # v1.20.2 (OBS-S67-04): the accepted-history baseline. Pinning the scanner
+  # correctly surfaces content scrubbed at HEAD but still reachable by SHA in
+  # older commits. Without a way to say "known and accepted", the walk would
+  # be permanently red and would stop being read, which is how a control dies.
+  #
+  # The baseline is ENUMERATED, never a threshold: a finding is forgiven only
+  # if its exact (path, pattern) pair is listed AND the commit is an ancestor
+  # of baseline-sha. Every deny hit must be accounted for line-for-line, so a
+  # deny that produces no parseable pair (the HEAD-author-email check, say)
+  # fails the commit. Fail-closed in every direction.
+  BASELINE_PUBLIC="$REPO_ROOT/bin/audit-history-baseline.txt"
+  BASELINE_LOCAL="$REPO_ROOT/bin/audit-history-baseline.local.txt"
+  BASELINE_MERGED="$TMPDIR/history-baseline.tsv"
+  BASELINE_SHA=""
+  : > "$BASELINE_MERGED"
+  for bf in "$BASELINE_PUBLIC" "$BASELINE_LOCAL"; do
+    [ -r "$bf" ] || continue
+    grep -vE '^[[:space:]]*(#|$)' "$bf" >> "$BASELINE_MERGED" || true
+    if [ -z "$BASELINE_SHA" ]; then
+      BASELINE_SHA=$(grep -oE '^#[[:space:]]*baseline-sha:[[:space:]]*[0-9a-f]{7,40}' "$bf" \
+        | head -1 | grep -oE '[0-9a-f]{7,40}' || true)
+    fi
+  done
+  baseline_rows=$(wc -l < "$BASELINE_MERGED" | tr -d ' ')
+  if [ -n "$BASELINE_SHA" ]; then
+    hdr "accepted-history baseline: $baseline_rows row(s), valid at or before $BASELINE_SHA"
+  else
+    hdr "accepted-history baseline: none (every deny hit in history will be reported)"
+  fi
+
+  # Count the deny hit lines whose (path, pattern) pair is baselined.
+  baselined_hit_count() {
+    awk -v basefile="$BASELINE_MERGED" '
+      BEGIN {
+        FS = "\t"
+        while ((getline l < basefile) > 0) {
+          split(l, f, "\t")
+          if (f[1] != "" && f[2] != "") accepted[f[1] "\x01" f[2]] = 1
+        }
+        n = 0
+      }
+      /^\[publish-audit hit\] DENY pattern / {
+        pat = $0
+        sub(/^\[publish-audit hit\] DENY pattern ./, "", pat)
+        sub(/.:$/, "", pat)
+        inblock = 1
+        next
+      }
+      /^\[/ { inblock = 0; next }
+      inblock && /^    / {
+        rec = substr($0, 5)
+        i = index(rec, ":")
+        if (i > 1) {
+          path = substr(rec, 1, i - 1)
+          if ((path "\x01" pat) in accepted) n++
+        }
+        next
+      }
+      { inblock = 0 }
+      END { print n + 0 }
+    '
+  }
+
   hdr "walking history (--history)..."
+  hist_accepted=0
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
-    if ! ( cd "$TMPDIR/repo" && git checkout -q "$commit" && bash bin/publish-audit.sh 2>/dev/null ); then
-      hdr "  HISTORICAL LEAK at $commit"
+    # --force because the previous iteration left the pinned scripts in the
+    # tree as local modifications, which a plain checkout would refuse to
+    # overwrite. The pinned paths are all inside SCAN_EXCLUDE, so restoring
+    # them does not change what the scan sees.
+    commit_out=$(
+      cd "$TMPDIR/repo" \
+        && git checkout -q --force "$commit" \
+        && mkdir -p bin \
+        && cp -f "$PINNED_DIR/publish-audit.sh" bin/publish-audit.sh \
+        && cp -f "$PINNED_DIR/audit-patterns.sh" bin/audit-patterns.sh \
+        && { [ ! -r "$PINNED_DIR/audit-patterns.local.sh" ] \
+             || cp -f "$PINNED_DIR/audit-patterns.local.sh" bin/audit-patterns.local.sh; } \
+        && bash bin/publish-audit.sh 2>/dev/null
+    ) && commit_rc=0 || commit_rc=$?
+    [ "$commit_rc" -eq 0 ] && continue
+
+    commit_deny=$(printf '%s\n' "$commit_out" \
+      | grep -E '^\[publish-audit\][[:space:]]+deny hits:' \
+      | head -1 \
+      | sed -E 's/.*deny hits:[[:space:]]+([0-9]+).*/\1/' || true)
+    [ -z "$commit_deny" ] && commit_deny=0
+
+    accounted=0
+    if [ -n "$BASELINE_SHA" ] && [ "$commit_deny" -gt 0 ] \
+       && ( cd "$TMPDIR/repo" && git merge-base --is-ancestor "$commit" "$BASELINE_SHA" ) 2>/dev/null; then
+      matched=$(printf '%s\n' "$commit_out" | baselined_hit_count)
+      if [ "$matched" -eq "$commit_deny" ]; then
+        accounted=1
+      fi
+    fi
+
+    if [ "$accounted" -eq 1 ]; then
+      hist_accepted=$((hist_accepted + 1))
+    else
+      hdr "  HISTORICAL LEAK at $commit ($commit_deny deny hit(s) not covered by the baseline)"
       hist_leaks=$((hist_leaks + 1))
     fi
   done < <(cd "$TMPDIR/repo" && git log --format='%H' main)
 
+  if [ "$hist_accepted" -gt 0 ]; then
+    hdr "$hist_accepted commit(s) carried only baselined, previously accepted findings"
+  fi
   if [ "$hist_leaks" -gt 0 ]; then
     hdr "$hist_leaks historical leak(s) found"
     state_rc=1
