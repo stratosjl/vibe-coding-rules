@@ -4,6 +4,32 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
 
+## v1.21.0
+
+**A handover must be re-audited if anything lands after it is written, and must
+carry the next session's prompt.** Two new obligations at every tier that has a
+handover (T2 items 15 and 16, T3 item 13, T4 elements 8a and 8b). T0 and T1 are
+unaffected: both explicitly have no handovers, T1 being single-session by
+definition.
+
+The failure this closes is not a missing entry but a **contradicted
+instruction**. A handover told the next session to run a process; results
+arriving after it was written established the process must not run until several
+defects were fixed. The issue register had them and the handover still said "run
+it". A stale handover is more dangerous than an incomplete one, because it is
+confident, and it is the artefact the next session acts on without checking.
+
+The second obligation closes a quieter gap: a prompt rendered only in the
+closing chat message is not an artefact. Scrollback is not in the repo, does not
+survive a new machine, and cannot be read by whoever picks the work up. The
+handover now carries the prompt inline or names a path verified to exist before
+close. Where a tier also requires the chat-render, the two remain separate
+obligations and neither substitutes for the other.
+
+T4 adds that the prompt must state what is BLOCKED and by which open item, not
+merely what to do next: an ordered action list with no blockers named is how a
+next session executes a forbidden step in good faith.
+
 ## 1.20.2 - 2026-08-09
 
 Two controls that were reporting confidently wrong answers. The chat-claim liveness probe declared every other session dead, and the history walk graded old commits with old graders.
