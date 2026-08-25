@@ -35,7 +35,7 @@ This dispatcher chain is the standard pattern for keeping the version-controlled
 
 If you do not have operator-local post-* hooks, the dispatchers are inert and require no additional configuration.
 
-## Follow the lockstep version-bump rule
+## Bump ONE version, and let the guard prove it
 
 Whenever you change anything in:
 
@@ -44,19 +44,45 @@ Whenever you change anything in:
 - `methodology-content/*.md`
 - `commands/*.md` (anything affecting slash-command behaviour)
 
-bump these values in lockstep:
+bump **`.claude-plugin/plugin.json` → `version`**. That is the whole ritual for
+seven of the nine carriers, which now derive their value from that manifest at
+load rather than mirroring it as a literal:
 
-1. `.claude-plugin/plugin.json` → `version`
-2. `hooks/session-start.py` → `ROUTINE_VERSION`
-3. `hooks/user-prompt-submit.py` → `ROUTINE_VERSION`
-4. `hooks/post-tool-use.py` → `ROUTINE_VERSION`
-5. `hooks/stop.py` → `ROUTINE_VERSION`
-6. `hooks/session-end.py` → `ROUTINE_VERSION`
-7. `bin/publish-audit-combined.sh` → `HARNESS_VERSION`
-8. `kimi.plugin.json` → `version`
-9. `hooks/kimi/_adapter.py` → `KIMI_ADAPTER_VERSION`
+| carrier | how it gets its version |
+|---|---|
+| `.claude-plugin/plugin.json` → `version` | **source of truth — bump this** |
+| `hooks/session-start.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/user-prompt-submit.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/post-tool-use.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/stop.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/session-end.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/kimi/_adapter.py` → `KIMI_ADAPTER_VERSION` | derived at load |
+| `bin/publish-audit-combined.sh` → `HARNESS_VERSION` | derived at start |
+| `kimi.plugin.json` → `version` | **hand-maintained — bump this too** |
 
-The version field in `plugin.json` is single-source-of-truth; the five `ROUTINE_VERSION` constants, the audit harness's `HARNESS_VERSION`, and the two Kimi version carriers are mirrors that travel with the hook/harness code. Drift between them surfaces as confusing log entries and stale-cache symptoms downstream. If a PR touches one, it touches all nine. (This is the "9-constant lockstep"; the harness version was the seventh, historically omitted from this list per OBS-AUD-4, and the two Kimi carriers joined with the dual-harness support.)
+`kimi.plugin.json` is a second static manifest consumed by Kimi Code, so it
+cannot derive from the first. It is the only carrier that can still drift, and
+it is exactly what the guard catches.
+
+**Never reintroduce a hand-maintained version literal.** `test-version-lockstep.py`
+fails on one even when its value is currently correct, because a correct literal
+is simply a drift that has not happened yet.
+
+**The guard, and why it exists.** `test-version-lockstep.py` runs as tool 7 of
+`bin/publish-audit-combined.sh`, so a drifted release cannot be pushed through
+the `pre-push` hook. It checks three things: no hand-maintained literal survives
+(ARM 1); every hook, executed for real, resolves the manifest version and not
+the `unknown` fail-soft sentinel (ARM 2); and every static manifest mirror
+agrees (ARM 3). `--self-test` injects one defect per arm into throwaway copies
+of the tree and asserts each arm reports it — the harness always passes that
+flag, so the negative proof runs on every push rather than only when someone
+remembers.
+
+This replaces the "9-constant lockstep" that stood from v1.1.1 to v1.21.0. It
+was re-broken by every content-only release, most recently and most visibly at
+v1.21.0: the manifest read `1.21.0` while all eight mirrors still read `1.20.2`,
+in the working tree AND in the installed plugin cache, so every hook log entry
+stamped the wrong version and no test noticed. Recorded as I-22.
 
 After tagging a release, also sync any managed install copies of the plugin on the release machine (the Kimi Code managed plugins directory, the Claude Code plugin cache). They are plain mirrors of the tree, and a stale copy silently runs the previous release's hooks. Re-running the installer or an `rsync -a --delete --exclude .git` from the repo root both work.
 

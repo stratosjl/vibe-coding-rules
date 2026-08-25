@@ -22,7 +22,32 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-KIMI_ADAPTER_VERSION = "1.20.2"
+
+def _resolve_plugin_version() -> str:
+    """Read the Kimi bundle's version from a manifest (I-22).
+
+    Prefers `.claude-plugin/plugin.json`, the repo's single source of truth,
+    and falls back to `kimi.plugin.json` so a Kimi-only distribution that ships
+    without the Claude manifest still resolves. Fail-soft to "unknown" — see
+    the identical resolver in the Claude hooks for why a visibly-absent version
+    beats a plausibly-stale one.
+    """
+    root = Path(__file__).resolve().parent.parent.parent
+    for candidate in (
+        root / ".claude-plugin" / "plugin.json",
+        root / "kimi.plugin.json",
+    ):
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                version = str(json.load(f).get("version", "")).strip()
+            if version:
+                return version
+        except Exception:
+            continue
+    return "unknown"
+
+
+KIMI_ADAPTER_VERSION = _resolve_plugin_version()
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 HOOKS_DIR = Path(__file__).resolve().parent.parent  # the Claude hook modules live here
 

@@ -1,6 +1,6 @@
 {
   "name": "vc-roe",
-  "version": "1.20.2",
+  "version": "1.22.0",
   "description": "VC-RoE - Vibe Coding · Rules of Engagement for Kimi Code CLI. Auto-detects project complexity (Scope x Criticality) and injects the matching methodology slice at SessionStart. Five tiers T0..T4 with hook-driven heartbeat.",
   "author": { "name": "Stratos Laspas", "email": "stratosjl@gmail.com" },
   "homepage": "https://github.com/stratosjl/vibe-coding-rules",

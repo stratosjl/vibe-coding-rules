@@ -65,7 +65,37 @@ _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
-ROUTINE_VERSION = "1.20.2"
+
+def _resolve_plugin_version() -> str:
+    """Read this bundle's version from its own manifest (I-22).
+
+    `.claude-plugin/plugin.json` is single-source-of-truth. Every release from
+    v1.1.1 to v1.21.0 mirrored it into a hand-maintained literal here, and a
+    content-only release re-broke the mirror every time: measured 2026-08-25,
+    the manifest read 1.21.0 while all eight mirrors still read 1.20.2, in the
+    working tree AND the installed plugin cache, so every hook log entry
+    stamped the wrong version and nothing failed.
+
+    Resolved from `__file__` rather than from CLAUDE_PLUGIN_ROOT so the value
+    always names the bundle this file was loaded from, even when the env var
+    points at a sibling plugin. Fail-soft to "unknown": the constant is a log
+    stamp with no behavioural role, and a visibly-absent version is safer than
+    a plausibly-stale one. `test-version-lockstep.py` ARM 2 asserts it never
+    actually resolves to the sentinel in a real tree.
+    """
+    try:
+        manifest = (
+            Path(__file__).resolve().parent.parent
+            / ".claude-plugin"
+            / "plugin.json"
+        )
+        with open(manifest, encoding="utf-8") as f:
+            return str(json.load(f).get("version", "")).strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+ROUTINE_VERSION = _resolve_plugin_version()
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"

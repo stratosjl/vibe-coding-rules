@@ -2,7 +2,35 @@
 
 All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
-The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json` and mirrored to the `ROUTINE_VERSION` constant in every hook under `hooks/`.
+The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
+
+## v1.22.0
+
+Closes **I-22**: the version-lockstep defect that re-broke on every content-only release. `.claude-plugin/plugin.json` has been single-source-of-truth since v1.1.1, but eight carriers mirrored it as hand-maintained literals, and nothing checked them. Measured 2026-08-25 on the v1.21.0 ship: the manifest read `1.21.0` while **all eight mirrors still read `1.20.2`** — the five hook `ROUTINE_VERSION`s, `HARNESS_VERSION`, `kimi.plugin.json` and `KIMI_ADAPTER_VERSION` — in the working tree AND in the installed plugin cache at `vibe-coding-rules/vc-roe/main/`. Every hook log entry from that release stamps the wrong version, and the 8-test regression floor was green throughout because no test covered the constants. Minor-class semver: new test infrastructure at the repo root and a new harness tool, per the v1.5.0 precedent; no behavioural change to tier detection, heartbeat cadence, the silent-stop blocker or any audit pattern set.
+
+### Seven of nine carriers now derive; one still mirrors
+
+- **`ROUTINE_VERSION` is computed, not written.** All five hooks (`session-start.py`, `user-prompt-submit.py`, `post-tool-use.py`, `stop.py`, `session-end.py`) gain an identical `_resolve_plugin_version()` that reads `.claude-plugin/plugin.json` relative to `__file__`. Resolution is deliberately **not** via `CLAUDE_PLUGIN_ROOT`: the value must name the bundle the file was loaded from, which matters on any machine that has more than one plugin installed carrying hook files of the same name.
+- **`KIMI_ADAPTER_VERSION` derives too**, preferring `.claude-plugin/plugin.json` and falling back to `kimi.plugin.json` so a Kimi-only distribution shipped without the Claude manifest still resolves.
+- **`HARNESS_VERSION` derives** in `bin/publish-audit-combined.sh`, read with `sed` rather than `jq`/`python` so the banner needs no interpreter and cannot fail ahead of the script's own `$PY` probe.
+- **Fail-soft is `"unknown"`, not a stale literal.** The constant is a log stamp with no behavioural role. A visibly-absent version is safer than a plausibly-correct stale one, and ARM 2 below asserts it never actually resolves to the sentinel.
+- **`kimi.plugin.json` stays hand-maintained** — it is a second static manifest consumed by Kimi Code and cannot derive from the first. It is now the only carrier that can drift, and it is precisely what the guard catches. The release ritual drops from nine edits to two.
+
+### The guard, proven red before it was trusted
+
+- **New `test-version-lockstep.py`** at the repo root, joining the regression floor as the 9th test. Three arms: **ARM 1** fails on any surviving hand-maintained literal *even when its value is currently correct*, because a correct literal is a drift that has not happened yet; **ARM 2** executes each hook for real against a throwaway `HOME` and reads back the resolved constant, catching a silently-broken resolver that ARM 1 cannot see (`guards-and-negative-tests.md` item 12 — assert the positive); **ARM 3** compares the static manifest mirrors.
+- **`--self-test` injects one defect per arm** into throwaway copies of the tree and asserts each arm reports it, against a control clone proven clean first. Verified: manifest bumped alone → ARM 3 fires and the derived carriers correctly follow; a hook whose resolver cannot find the manifest → ARM 2 catches `'unknown'`; a literal reintroduced → ARM 1 catches it.
+- **Wired as tool 7 of `bin/publish-audit-combined.sh`**, always with `--self-test` (~0.5 s), so the negative proof runs on every push rather than when someone remembers. End-to-end verified: with the manifest bumped alone, `.githooks/pre-push` exits 1 and reports `Push BLOCKED`.
+- **`bin/publish-audit-combined.sh --version`** prints the resolved harness version and exits, so the guard can read it without running the seven-tool audit.
+- **`--help` no longer truncates.** Its hard-coded `sed -n '2,40p'` silently cut the Usage block the moment the header gained the tool-7 entry — the same drift class this release closes — and is now an `awk` range that follows the comment block however long it grows.
+
+### Documentation
+
+- **`CONTRIBUTING.md`.** "Follow the lockstep version-bump rule" becomes "Bump ONE version, and let the guard prove it", with a table naming how each of the nine carriers now gets its value and an explicit prohibition on reintroducing a literal. The superseded "9-constant lockstep" is described as what it was, with the measurement that killed it.
+- **`README.md`.** The new-hook checklist tells contributors to copy `_resolve_plugin_version()` rather than write a literal.
+- **`CHANGELOG.md`.** The preamble records that entries below v1.22.0 describe the superseded hand-bumped scheme.
+
+Upgrade note: `bin/sync-upstream-plugins.sh` is the apply lever for this plugin, which is pinned in `~/.claude/plugin-upstream-sync/config.json`; `claude plugin update` reverts a pinned install. Because the version is now read from the manifest at hook load, a managed copy that is byte-current can no longer report a stale `routine_version` — but a copy that is *file*-stale still runs the previous release's hook code, so the post-tag sync step in CONTRIBUTING.md still applies.
 
 ## v1.21.0
 

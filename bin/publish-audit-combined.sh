@@ -12,7 +12,7 @@
 # trigger active until shipped before v1.6.0 soak completes or next
 # push to origin/main, whichever earlier.
 #
-# Six wrapped tools:
+# Seven wrapped tools:
 #   1. publish-audit.sh             operator-pattern, working-tree scope
 #   2. publish-audit-state.sh       fresh-clone public-state, HEAD only
 #                                   (--history skipped per v1.6.0
@@ -26,6 +26,10 @@
 #                                   to gitleaks for shapes gitleaks
 #                                   regexes can miss (Anthropic, recent
 #                                   GitHub PAT shapes, PEM markers, etc.)
+#   7. test-version-lockstep.py     version-lockstep guard (I-22), run
+#                                   WITH --self-test so its three negative
+#                                   arms are proven to fire on every push
+#                                   rather than only when someone remembers
 #
 # Result semantics:
 #   PASS - tool ran clean
@@ -41,6 +45,7 @@
 # Usage:
 #   bash bin/publish-audit-combined.sh                 quiet, hook-mode
 #   bash bin/publish-audit-combined.sh --verbose       full per-tool output
+#   bash bin/publish-audit-combined.sh --version       resolved harness version
 #   bash bin/publish-audit-combined.sh -h | --help
 
 set -uo pipefail
@@ -48,7 +53,16 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
-HARNESS_VERSION="1.20.2"
+# I-22: HARNESS_VERSION derives from the single-source-of-truth manifest.
+# A hand-maintained mirror here went stale on every content-only release
+# (measured 2026-08-25: manifest 1.21.0, this constant still 1.20.2). Read with
+# `sed` rather than jq or python so the banner needs no interpreter and this
+# line cannot fail before the $PY probe below has run. The value is cosmetic,
+# so an unreadable manifest degrades to a visible "unknown" rather than
+# aborting the audit; test-version-lockstep.py ARM 2 asserts it resolves.
+HARNESS_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
+[ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
 VERBOSE=0
 
 # Resolve a Python interpreter that actually runs. On Windows, `python3`
@@ -69,8 +83,17 @@ while [ "$#" -gt 0 ]; do
       VERBOSE=1
       shift
       ;;
+    --version)
+      # I-22: lets test-version-lockstep.py read back the resolved value
+      # without running the six-tool audit.
+      printf '%s\n' "$HARNESS_VERSION"
+      exit 0
+      ;;
     -h|--help)
-      sed -n '2,40p' "$0"
+      # Print the whole comment header, however long it grows. The former
+      # hard-coded `sed -n '2,40p'` silently truncated the Usage block the
+      # first time the header gained a line (I-22 tool-7 entry).
+      awk 'NR>1 { if (/^#/) print; else exit }' "$0"
       exit 0
       ;;
     *)
@@ -118,7 +141,7 @@ run_verbose_or_capture() {
 hdr "combined-audit harness v${HARNESS_VERSION} starting"
 
 # ----- Tool 1: publish-audit.sh -------------------------------------------
-if [ "$VERBOSE" -eq 1 ]; then hdr "tool 1/6: publish-audit.sh"; fi
+if [ "$VERBOSE" -eq 1 ]; then hdr "tool 1/7: publish-audit.sh"; fi
 out=""
 run_verbose_or_capture out bash bin/publish-audit.sh
 rc=$?
@@ -131,7 +154,7 @@ else
 fi
 
 # ----- Tool 2: publish-audit-state.sh (HEAD only; no --history) -----------
-if [ "$VERBOSE" -eq 1 ]; then hdr "tool 2/6: publish-audit-state.sh (HEAD only)"; fi
+if [ "$VERBOSE" -eq 1 ]; then hdr "tool 2/7: publish-audit-state.sh (HEAD only)"; fi
 out=""
 run_verbose_or_capture out bash bin/publish-audit-state.sh
 rc=$?
@@ -143,7 +166,7 @@ fi
 
 # ----- Tools 3 + 4: gitleaks (HEAD no-git, then full history) -------------
 if command -v gitleaks >/dev/null 2>&1; then
-  if [ "$VERBOSE" -eq 1 ]; then hdr "tool 3/6: gitleaks HEAD (no-git)"; fi
+  if [ "$VERBOSE" -eq 1 ]; then hdr "tool 3/7: gitleaks HEAD (no-git)"; fi
   out=""
   run_verbose_or_capture out gitleaks detect --source "$REPO_ROOT" --no-git -v
   rc=$?
@@ -153,7 +176,7 @@ if command -v gitleaks >/dev/null 2>&1; then
     record "gitleaks-head" FAIL "leaks reported; rc=$rc"
   fi
 
-  if [ "$VERBOSE" -eq 1 ]; then hdr "tool 4/6: gitleaks full history walk"; fi
+  if [ "$VERBOSE" -eq 1 ]; then hdr "tool 4/7: gitleaks full history walk"; fi
   out=""
   run_verbose_or_capture out gitleaks detect --source "$REPO_ROOT" -v
   rc=$?
@@ -163,13 +186,13 @@ if command -v gitleaks >/dev/null 2>&1; then
     record "gitleaks-history" FAIL "leaks reported; rc=$rc"
   fi
 else
-  if [ "$VERBOSE" -eq 1 ]; then hdr "tools 3/6 + 4/6: gitleaks SKIPPED (not installed)"; fi
+  if [ "$VERBOSE" -eq 1 ]; then hdr "tools 3/7 + 4/7: gitleaks SKIPPED (not installed)"; fi
   record "gitleaks-head" WARN "gitleaks not installed"
   record "gitleaks-history" WARN "gitleaks not installed"
 fi
 
 # ----- Tool 5: test-audit-patterns.py -------------------------------------
-if [ "$VERBOSE" -eq 1 ]; then hdr "tool 5/6: test-audit-patterns.py"; fi
+if [ "$VERBOSE" -eq 1 ]; then hdr "tool 5/7: test-audit-patterns.py"; fi
 if [ -r "$REPO_ROOT/test-audit-patterns.py" ]; then
   out=""
   run_verbose_or_capture out "$PY" test-audit-patterns.py
@@ -185,7 +208,7 @@ else
 fi
 
 # ----- Tool 6: inline credential heuristics -------------------------------
-if [ "$VERBOSE" -eq 1 ]; then hdr "tool 6/6: inline credential heuristics"; fi
+if [ "$VERBOSE" -eq 1 ]; then hdr "tool 6/7: inline credential heuristics"; fi
 # Patterns are regex SHAPES only (no literal credentials embedded). The
 # harness file is added to CRED_EXCLUDE as defence-in-depth even though
 # regex shapes do not self-match by inspection.
@@ -220,6 +243,28 @@ if [ "$cred_hits" -eq 0 ]; then
   record "credential-heuristics" PASS "0 hits across ${#CRED_PATTERNS[@]} patterns"
 else
   record "credential-heuristics" FAIL "$cred_hits hits ($cred_detail)"
+fi
+
+# ----- Tool 7: test-version-lockstep.py (I-22) ----------------------------
+# Blocks a release whose version carriers have drifted from
+# .claude-plugin/plugin.json. --self-test re-proves all three arms can go red
+# on every invocation (~0.5s); per guards-and-negative-tests.md item 3 a guard
+# whose negative test is never watched fail is not evidence.
+if [ "$VERBOSE" -eq 1 ]; then hdr "tool 7/7: test-version-lockstep.py --self-test"; fi
+if [ -r "$REPO_ROOT/test-version-lockstep.py" ]; then
+  out=""
+  run_verbose_or_capture out "$PY" test-version-lockstep.py --self-test
+  rc=$?
+  summary=$(printf '%s\n' "$out" | grep -E '^[0-9]+ pass / [0-9]+ fail$' | tail -1)
+  [ -n "$summary" ] || summary="no summary line"
+  if [ "$rc" -eq 0 ]; then
+    record "test-version-lockstep" PASS "$summary"
+  else
+    drift=$(printf '%s\n' "$out" | grep -E '^ +-> ' | head -3 | tr -d '\n' | sed 's/  */ /g')
+    record "test-version-lockstep" FAIL "rc=$rc; $summary;$drift"
+  fi
+else
+  record "test-version-lockstep" FAIL "test-version-lockstep.py not found at repo root"
 fi
 
 # ----- Aggregate report ---------------------------------------------------

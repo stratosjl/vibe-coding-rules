@@ -140,7 +140,7 @@ Three steps to add another Claude Code hook event (PreToolUse, PostToolUse, Suba
 
 1. **Write the hook script** at `hooks/<event-name>.py`. Mirror the existing contract: pure stdlib; never throw; read stdin JSON; write JSON to stdout (or empty for no-op); always exit 0; append one-line JSON log entry to `~/.claude/methodology-hook.log` with `ts`, `hook`, `session_id`, `routine_version` fields.
 2. **Register in `hooks/hooks.json`** under the matching event name, with the same `${CLAUDE_PLUGIN_ROOT}/hooks/<event-name>.py` invocation pattern and a tight timeout (SessionStart 10s, UserPromptSubmit 5s, Stop 5s; pick proportional to expected work).
-3. **Bump `ROUTINE_VERSION`** in the new file in lockstep with `plugin.json`, `detection-rules.json`, and the existing hook files. Single-source-of-truth lives in `plugin.json`.
+3. **Derive `ROUTINE_VERSION`, never hard-code it.** Copy the `_resolve_plugin_version()` helper from any existing hook; it reads `.claude-plugin/plugin.json`, the single source of truth, relative to `__file__`. A hand-written literal fails `test-version-lockstep.py`, which runs as tool 7 of the pre-push audit.
 
 The plugin's `hooks/` directory is the canonical home for all hook scripts. Do not introduce `settings.json` hook entries on the user side; they bypass the plugin's lockstep discipline. Any new hook should preserve the fail-soft contract: a hook crash never blocks Claude Code itself.
 
