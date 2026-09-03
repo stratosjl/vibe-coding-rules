@@ -31,5 +31,9 @@ methodology-content/residency-routing.md
 # operator-private per-project memory - never publish to this public repo (restored after v1.17.0 regression)
 memory/
 
-# operator-private tier-addon overlay slice; retired 2026-06-24, never publish to this public repo
-methodology-content/T4-ham.md
+# operator-private tier-addon overlay slices; never publish to this public repo.
+# Deliberately a glob rather than a filename: the public slices are T<n>.md with no
+# suffix, so this cannot match one, and it keeps covering an addon slice if it is
+# ever renamed. Naming a specific private slice here would also put that name in a
+# public file, which is what the operator-side leak guard exists to prevent.
+methodology-content/T4-*.md
