@@ -4,6 +4,30 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.23.0
+
+Adds a **session-open cross-session audit at T4**: before substantive work begins, a T4 session audits scope, decisions and open issues across ALL sessions, not only against the last handover. Minor-class semver: a new mandatory obligation in `methodology-content/T4.md`, no change to tier detection, heartbeat cadence, the silent-stop blocker, the version-lockstep guard or any audit pattern set.
+
+### The gap it closes
+
+Every completeness check in the stack takes the register as given. T4 element 8a enumerates *the register's* open items against the handover; T3 Pass 4 carries an open-issues capture check; T3 item 11 surfaces forward obligations lacking a closure trigger. None of them asks whether the register is **complete**, so a missing `decisions.md`, a missing `open-issues.md`, or a session that ended without writing a handover leaves every one of those checks passing over an empty or partial set and reporting success. A check whose denominator is a file that does not exist cannot fail.
+
+**Measured 2026-09-03** on a project that had run twelve sessions at T3: neither register file existed at all, so both close-side checks had been passing over an empty set for the life of the project. Its commit history showed one session with two substantive commits and no handover, made on a second machine under a different commit identity, so neither its transcript nor its record was present on the machine doing the audit; three further work episodes carried commits and no numbered handover. All of them were invisible to a check that starts from the handover directory, and all of them surfaced from the commit log in one command.
+
+### The four steps
+
+1. **Enumerate sessions from an instrument the register does not control** (commit history, forge, the artefacts the work wrote), never the handover directory. A record cannot be its own denominator: auditing the register with the register catches drift inside it and is structurally blind to what it omits.
+2. **Prove the registers exist and were read**, and report the denominator: sessions found, sessions carrying a record, items per register, and what could not be examined.
+3. **Re-measure each open item rather than inheriting its status, separating STATE from EVENT.** A state item is answered by a fresh measurement; an event item is not, because a clean present state is exactly what a successful recovery looks like.
+4. **Surface to the operator before continuing**, gaps named, setting a closure trigger on anything carried forward that lacks one. T3 item 11 discharges here rather than separately.
+
+Scoped as a completeness check, not a re-litigation: an item confirmed still open is carried forward rather than reopened, and a decision found unrecorded is written down as it was made rather than re-decided.
+
+### Documentation
+
+- **`methodology-content/T4.md`** gains the section, placed ahead of the eleven-element close because it fires at session open rather than at close.
+- **`README.md`** tier table and the "why each tier needs what it adds" list both carry it, so the README does not become the stale mirror of a slice it summarises.
+
 ## v1.22.0
 
 Closes **I-22**: the version-lockstep defect that re-broke on every content-only release. `.claude-plugin/plugin.json` has been single-source-of-truth since v1.1.1, but eight carriers mirrored it as hand-maintained literals, and nothing checked them. Measured 2026-08-25 on the v1.21.0 ship: the manifest read `1.21.0` while **all eight mirrors still read `1.20.2`** — the five hook `ROUTINE_VERSION`s, `HARNESS_VERSION`, `kimi.plugin.json` and `KIMI_ADAPTER_VERSION` — in the working tree AND in the installed plugin cache at `vibe-coding-rules/vc-roe/main/`. Every hook log entry from that release stamps the wrong version, and the 8-test regression floor was green throughout because no test covered the constants. Minor-class semver: new test infrastructure at the repo root and a new harness tool, per the v1.5.0 precedent; no behavioural change to tier detection, heartbeat cadence, the silent-stop blocker or any audit pattern set.
