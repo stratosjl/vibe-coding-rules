@@ -6,7 +6,11 @@ synthetic transcripts + anchor files and exercises post-tool-use.py
 end-to-end via subprocess, asserting the LAST_HEARTBEAT field on disk
 advances (or does not advance) according to spec.
 
-Pure stdlib. Cleans up its /tmp artefacts on exit.
+Pure stdlib. Runs in a private anchor namespace: main() redirects
+TMPDIR/TEMP/TMP and HOME/USERPROFILE into a throwaway directory before any
+case runs, so the hooks it spawns cannot touch a live session's anchors,
+session marker, hook log or writer claim. Everything it writes goes with
+that directory on exit, and a leak check asserts so.
 
 Usage:
     python3 test-heartbeat.py
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +32,41 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 HOOK = PLUGIN_ROOT / "hooks" / "post-tool-use.py"
 STOP_HOOK = PLUGIN_ROOT / "hooks" / "stop.py"
 ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp divergence on Windows
+
+
+def isolate_anchor_namespace(parent: Path) -> Path:
+    """Move this run's anchor namespace into a private dir under `parent`.
+
+    F043. Every hook resolves its own ANCHOR_DIR from tempfile.gettempdir()
+    and none of them honours VC_ROE_ANCHOR_DIR, so an unisolated run writes
+    into the very temp namespace live sessions keep their anchors in: the
+    transient per-case anchors widen the newest-anchor resolution race, and
+    run_ups drives user-prompt-submit.py, which writes a
+    claude-methodology-current-session-<cwd> marker against the REAL
+    checkout path and so overwrites a live session's Layer 1 pointer.
+
+    The hooks are spawned with os.environ.copy(), so redirecting TMPDIR,
+    TEMP and TMP here is what the children resolve gettempdir() from.
+    HOME and USERPROFILE move with them because the hooks also append to
+    ~/.claude/methodology-hook.log and read and write the writer-claim
+    files under ~/.claude/projects/<cwd>, which are production state for
+    this same repository path. Returns the private namespace dir so the
+    caller can assert nothing is left in it.
+    """
+    global ANCHOR_DIR
+    anchors = parent / "anchor-namespace"
+    anchors.mkdir(parents=True, exist_ok=True)
+    home = parent / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    for var in ("TMPDIR", "TEMP", "TMP"):
+        os.environ[var] = str(anchors)
+    for var in ("HOME", "USERPROFILE"):
+        os.environ[var] = str(home)
+    # gettempdir() caches into tempfile.tempdir on first call, so the parent
+    # process needs telling directly; the children read the env vars above.
+    tempfile.tempdir = str(anchors)
+    ANCHOR_DIR = anchors
+    return anchors
 
 
 def write_anchor(session_id: str, t0: int, last_hb: int, tier: str = "T4",
@@ -131,10 +171,28 @@ def run_stop(session_id: str, transcript_path: Path) -> tuple[int, str]:
     return proc.returncode, proc.stdout.decode("utf-8", errors="replace")
 
 
+def _marker_path() -> Path:
+    """The Layer 1 session marker user-prompt-submit.py writes for our cwd.
+
+    Mirrors write_session_marker in hooks/user-prompt-submit.py: the name is
+    keyed by the resolved cwd, and run_ups passes PLUGIN_ROOT as the cwd.
+    """
+    cwd_dashed = re.sub(r"[^A-Za-z0-9-]", "-", str(PLUGIN_ROOT.resolve()))
+    return ANCHOR_DIR / f"claude-methodology-current-session-{cwd_dashed}"
+
+
 def _cleanup(session_id: str) -> None:
     p = ANCHOR_DIR / f"claude-methodology-anchor-{session_id}"
     if p.is_file():
         p.unlink()
+    # F043: the run_ups cases make user-prompt-submit.py write a session
+    # marker keyed by cwd rather than by session id. Unlinking only the
+    # anchor left that marker behind, pointing at a session that no longer
+    # exists. It is one file per run, not one per case, so the unlink is
+    # guarded rather than unconditional.
+    marker = _marker_path()
+    if marker.is_file():
+        marker.unlink()
 
 
 def case_fresh_sentinel_advances(tmp: Path) -> tuple[bool, str]:
@@ -158,7 +216,9 @@ def case_fresh_sentinel_advances(tmp: Path) -> tuple[bool, str]:
             {"role": "tool-result", "text": "ok"},
             {"role": "assistant", "text": "continuing work"},
         ])
-        run_post_tool_use(sid, tx)
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb >= now - 2:
@@ -177,7 +237,6 @@ def case_stale_sentinel_does_not_advance(tmp: Path) -> tuple[bool, str]:
         now = int(time.time())
         t0 = now - 30 * 60
         last_hb_initial = t0 + 15 * 60
-        write_anchor(sid, t0=t0, last_hb=last_hb_initial, tier="T4")
         tx = tmp / f"transcript-{sid}.jsonl"
         write_transcript(tx, [
             {"role": "user-prompt", "text": "open"},
@@ -186,11 +245,27 @@ def case_stale_sentinel_does_not_advance(tmp: Path) -> tuple[bool, str]:
             {"role": "tool-result", "text": "ok"},
             {"role": "assistant", "text": "more work, no fresh sentinel"},
         ])
-        run_post_tool_use(sid, tx)
+        # F044 witness: the same transcript against LAST_HEARTBEAT_MIN = 5
+        # makes the T+10m sentinel fresh, so the hook MUST advance. Without
+        # it the assertion below is satisfied by a hook that never ran.
+        write_anchor(sid, t0=t0, last_hb=t0 + 5 * 60, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: witness run: post-tool-use.py exited {rc}"
+        witness_hb = int(read_anchor(sid).get("LAST_HEARTBEAT", "0"))
+        if witness_hb < now - 2:
+            return False, (f"FAIL: witness did not advance "
+                           f"(LAST_HEARTBEAT={witness_hb}, expected ~{now}); "
+                           f"the no-advance assertion below would be vacuous")
+        write_anchor(sid, t0=t0, last_hb=last_hb_initial, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb == last_hb_initial:
-            return True, f"OK (LAST_HEARTBEAT unchanged at {last_hb})"
+            return True, (f"OK (witness advanced to ~{witness_hb}; "
+                          f"LAST_HEARTBEAT unchanged at {last_hb})")
         return False, (f"FAIL: LAST_HEARTBEAT={last_hb}, expected "
                        f"unchanged at {last_hb_initial}")
     finally:
@@ -203,7 +278,6 @@ def case_no_sentinel_no_change(tmp: Path) -> tuple[bool, str]:
     try:
         now = int(time.time())
         t0 = now - 20 * 60
-        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
         tx = tmp / f"transcript-{sid}.jsonl"
         write_transcript(tx, [
             {"role": "user-prompt", "text": "open"},
@@ -211,11 +285,32 @@ def case_no_sentinel_no_change(tmp: Path) -> tuple[bool, str]:
             {"role": "tool-result", "text": "ok"},
             {"role": "assistant", "text": "still no sentinel"},
         ])
-        run_post_tool_use(sid, tx)
+        # F044 witness: the same shape WITH a sentinel MUST advance, so the
+        # untouched assertion below cannot be satisfied by a dead hook.
+        tx_witness = tmp / f"transcript-{sid}-witness.jsonl"
+        write_transcript(tx_witness, [
+            {"role": "user-prompt", "text": "open"},
+            {"role": "assistant", "text": "all assistant text, no sentinel"},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "assistant", "text": "still working [heartbeat-fired:T+15m]"},
+        ])
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        rc = run_post_tool_use(sid, tx_witness)
+        if rc != 0:
+            return False, f"FAIL: witness run: post-tool-use.py exited {rc}"
+        witness_hb = int(read_anchor(sid).get("LAST_HEARTBEAT", "0"))
+        if witness_hb < now - 2:
+            return False, (f"FAIL: witness did not advance "
+                           f"(LAST_HEARTBEAT={witness_hb}, expected ~{now}); "
+                           f"the untouched assertion below would be vacuous")
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb == 0:
-            return True, "OK (LAST_HEARTBEAT untouched)"
+            return True, f"OK (witness advanced to ~{witness_hb}; LAST_HEARTBEAT untouched)"
         return False, f"FAIL: LAST_HEARTBEAT={last_hb}, expected 0"
     finally:
         _cleanup(sid)
@@ -237,7 +332,9 @@ def case_multiturn_picks_max_sentinel(tmp: Path) -> tuple[bool, str]:
             {"role": "tool-result", "text": "ok"},
             {"role": "assistant", "text": "continuing"},
         ])
-        run_post_tool_use(sid, tx)
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb >= now - 2:
@@ -253,18 +350,33 @@ def case_tier_t1_no_op(tmp: Path) -> tuple[bool, str]:
     try:
         now = int(time.time())
         t0 = now - 20 * 60
-        write_anchor(sid, t0=t0, last_hb=0, tier="T1")
         tx = tmp / f"transcript-{sid}.jsonl"
         write_transcript(tx, [
             {"role": "user-prompt", "text": "open"},
             {"role": "assistant",
              "text": "fresh sentinel\n[heartbeat-fired:T+19m]"},
         ])
-        run_post_tool_use(sid, tx)
+        # F044 witness: the identical fixture at T4 MUST advance, so the
+        # no-advance assertion below is attributable to the tier gate and
+        # not to a hook that did nothing.
+        write_anchor(sid, t0=t0, last_hb=0, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: witness run: post-tool-use.py exited {rc}"
+        witness_hb = int(read_anchor(sid).get("LAST_HEARTBEAT", "0"))
+        if witness_hb < now - 2:
+            return False, (f"FAIL: T4 witness did not advance "
+                           f"(LAST_HEARTBEAT={witness_hb}, expected ~{now}); "
+                           f"the T1 assertion below would be vacuous")
+        write_anchor(sid, t0=t0, last_hb=0, tier="T1")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb == 0:
-            return True, "OK (T1 short-circuit; no advance)"
+            return True, (f"OK (T4 witness advanced to ~{witness_hb}; "
+                          f"T1 short-circuit, no advance)")
         return False, f"FAIL: T1 advanced LAST_HEARTBEAT to {last_hb}"
     finally:
         _cleanup(sid)
@@ -302,7 +414,9 @@ def case_synthetic_metadata_lines_do_not_halt_walk(tmp: Path) -> tuple[bool, str
             {"role": "assistant", "text": "more work, no fresh sentinel"},
             {"role": "tool-result", "text": "ok"},
         ])
-        run_post_tool_use(sid, tx)
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb >= now - 2:
@@ -330,7 +444,6 @@ def case_user_prompt_boundary_halts_walk(tmp: Path) -> tuple[bool, str]:
         now = int(time.time())
         t0 = now - 25 * 60
         last_hb_initial = t0 + 12 * 60
-        write_anchor(sid, t0=t0, last_hb=last_hb_initial, tier="T4")
         tx = tmp / f"transcript-{sid}.jsonl"
         write_transcript(tx, [
             {"role": "user-prompt", "text": "earliest prompt"},
@@ -342,12 +455,30 @@ def case_user_prompt_boundary_halts_walk(tmp: Path) -> tuple[bool, str]:
              "text": "current turn, [heartbeat-fired:T+10m]"},
             {"role": "tool-result", "text": "ok"},
         ])
-        run_post_tool_use(sid, tx)
+        # F044 witness: the same transcript against LAST_HEARTBEAT_MIN = 5
+        # makes the CURRENT-loop T+10m sentinel fresh, so the hook MUST
+        # advance. That proves the walk reaches the current loop, which is
+        # what makes the unchanged result below attributable to the boundary
+        # plus the freshness gate rather than to a hook that never ran.
+        write_anchor(sid, t0=t0, last_hb=t0 + 5 * 60, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: witness run: post-tool-use.py exited {rc}"
+        witness_hb = int(read_anchor(sid).get("LAST_HEARTBEAT", "0"))
+        if witness_hb < now - 2:
+            return False, (f"FAIL: witness did not advance "
+                           f"(LAST_HEARTBEAT={witness_hb}, expected ~{now}); "
+                           f"the unchanged assertion below would be vacuous")
+        write_anchor(sid, t0=t0, last_hb=last_hb_initial, tier="T4")
+        rc = run_post_tool_use(sid, tx)
+        if rc != 0:
+            return False, f"FAIL: post-tool-use.py exited {rc}"
         anchor = read_anchor(sid)
         last_hb = int(anchor.get("LAST_HEARTBEAT", "0"))
         if last_hb == last_hb_initial:
-            return True, ("OK (walk halted at user-prompt; T+20m from "
-                          "prior loop unreached; T+10m stale)")
+            return True, (f"OK (witness advanced to ~{witness_hb}; walk halted "
+                          f"at user-prompt; T+20m from prior loop unreached; "
+                          f"T+10m stale)")
         return False, (f"FAIL: LAST_HEARTBEAT={last_hb}, expected unchanged "
                        f"at {last_hb_initial}; walk leaked past user-prompt "
                        f"boundary or freshness gate failed")
@@ -678,6 +809,7 @@ def case_ups_under_cadence_is_ok(tmp: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
+    global ANCHOR_DIR
     cases = [
         ("fresh sentinel advances", case_fresh_sentinel_advances),
         ("stale sentinel no-op", case_stale_sentinel_does_not_advance),
@@ -712,8 +844,22 @@ def main() -> int:
          case_stop_logs_stop_hook_active_on_sentinel),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
+    # The isolation below moves process-wide state, and the finally clause
+    # deletes the directory it points at, so save what it overwrites and put
+    # it back. Without this a second in-process main() would resolve its
+    # temp dir to the tree the first one removed.
+    saved_env = {k: os.environ.get(k)
+                 for k in ("TMPDIR", "TEMP", "TMP", "HOME", "USERPROFILE")}
+    saved_tempdir = tempfile.tempdir
+    saved_anchor_dir = ANCHOR_DIR
     try:
-        print(f"== Heartbeat hook regression (fixtures: {parent}) ==\n")
+        # F043: do this BEFORE any case runs. Until it does, ANCHOR_DIR and
+        # every child hook point at the shared temp namespace live sessions
+        # use, so the suite mutates production state as a side effect.
+        anchors = isolate_anchor_namespace(parent)
+        print(f"== Heartbeat hook regression (fixtures: {parent}) ==")
+        print(f"   private anchor namespace: {anchors}\n")
+        before = sorted(p.name for p in anchors.iterdir())
         misses = 0
         for label, fn in cases:
             ok, detail = fn(parent)
@@ -721,12 +867,30 @@ def main() -> int:
             print(f"  [{status}] {label} — {detail}")
             if not ok:
                 misses += 1
+        # F043 leak guard: anything the run added to the anchor namespace and
+        # did not remove would, unisolated, have been added to the shared one.
+        after = sorted(p.name for p in anchors.iterdir())
+        leaked = sorted(set(after) - set(before))
+        if leaked:
+            print(f"  [FAIL] anchor-namespace leak check: {len(leaked)} file(s) "
+                  f"left behind out of {len(after)} present: {leaked}")
+            misses += 1
+        else:
+            print(f"  [OK  ] anchor-namespace leak check: no residue "
+                  f"({len(before)} file(s) before, {len(after)} after)")
         print()
-        print(f"Misses: {misses} / {len(cases)}")
+        print(f"Misses: {misses} / {len(cases) + 1}")
         return 0 if misses == 0 else 1
     finally:
         import shutil
         shutil.rmtree(parent, ignore_errors=True)
+        ANCHOR_DIR = saved_anchor_dir
+        tempfile.tempdir = saved_tempdir
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 if __name__ == "__main__":

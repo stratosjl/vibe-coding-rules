@@ -18,7 +18,7 @@
 # touched and the UserPromptSubmit hook went on short-circuiting at the old
 # tier. That is CANNOT-RUN folded into PASS on an enforcement primitive.
 #
-# Resolves the anchor file in four layers:
+# Resolves the anchor file in three layers:
 #   Layer 0 (primary, v1.24.0): $CLAUDE_CODE_SESSION_ID, exported by Claude Code
 #     into the environment of a slash command's Bash block. Per-process, so no
 #     other window can clobber it, which dissolves the cross-process marker race
@@ -39,11 +39,31 @@
 #   Layer 2 (v0.2.2): transcript-derived session_id from the .jsonl in the
 #     cwd-mapped project dir under ~/.claude/projects/, newest mtime, size
 #     tie-break.
-#   Layer 3 (legacy): newest anchor file modified in the last 5 seconds.
 #
-# Layers 1 to 3 are retained unchanged. Layer 0 is measured on ONE node in ONE
+# Layers 1 and 2 are retained unchanged. Layer 0 is measured on ONE node in ONE
 # session, so it is strictly additive: a harness build that does not export the
 # variable falls through to exactly the previous behaviour.
+#
+# ⚠ A legacy Layer 3 was REMOVED here. It took the first anchor in the temp
+# dir with an mtime under 5 seconds old, with no session scope and no cwd scope,
+# unlike layers 0, 1 and 2, so on a box running concurrent sessions it rewrote a
+# DIFFERENT window's TIER line and reported success. Reproduced 2026-09-04 in a
+# private anchor dir holding two foreign anchors: it resolved layer=recent-mtime
+# and rewrote claude-methodology-anchor-FOREIGN-AAA from TIER=T0 to TIER=T4 at
+# rc=0. It also picked the OLDER of the two, because that pipeline was
+# `find ... | head -1` with no sort anywhere in it while this header promised
+# "newest".
+#
+# It could not be scoped and it added no reach. An anchor is named by session id
+# alone, and its body carries T0, LAST_HEARTBEAT, TIER, PLUGIN_ROOT and
+# PLUGIN_VERSION, so nothing in it identifies a cwd the way layers 1 and 2 scope
+# themselves. And every production caller is a slash command's Bash block, which
+# runs only after a prompt was submitted: user-prompt-submit.py calls
+# write_session_marker() before read_anchor(), and both of its write_anchor()
+# call sites sit downstream of that, so any anchor young enough for the 5 second
+# window already had a Layer 1 marker written for the session that owns it.
+# Removing it routes the no-anchor case to the exit 3 NOT-RUNNABLE path below,
+# which is the honest answer rather than a write to a stranger's anchor.
 #
 # The anchor DIRECTORY is probed rather than hard-coded, because the Python
 # hooks use tempfile.gettempdir() while this script historically hard-coded
@@ -75,8 +95,8 @@ fi
 # $VC_ROE_ANCHOR_DIR, when set, REPLACES the probe list. It exists so the
 # negative test can remove this script's dependency and assert exit 3 without a
 # container: the real temp dir holds every live session's anchor AND the test
-# suite's own ktest-* residue, so layers 1 and 3 would otherwise resolve to one
-# of those and the CANNOT-RUN arm could never be exercised. Measured 2026-09-04:
+# suite's own ktest-* residue, so layer 1 would otherwise resolve to one of
+# those and the CANNOT-RUN arm could never be exercised. Measured 2026-09-04:
 # the first attempt at that negative test resolved via ups-marker to a leftover
 # ktest anchor and reported exit 0. Corrupting the input only exercises the arm
 # that already works; the arm worth proving is the one where the dependency is
@@ -144,17 +164,9 @@ if [ -z "$ANCHOR" ] && [ -n "$CWD_HASH" ]; then
     fi
 fi
 
-# ------------------------------- Layer 3 (legacy): newest anchor, <5s old -----
-if [ -z "$ANCHOR" ]; then
-    while IFS= read -r d; do
-        CAND=$(find "$d" -maxdepth 1 -name "claude-methodology-anchor-*" -newermt "@$(($(date +%s)-5))" 2>/dev/null | head -1)
-        if [ -n "${CAND:-}" ]; then ANCHOR="$CAND"; LAYER="recent-mtime"; break; fi
-    done < <(anchor_dirs)
-fi
-
 # ------------------------------------------------------------------ verdict --
 if [ -z "$ANCHOR" ] || [ ! -f "$ANCHOR" ]; then
-    echo "NOT-RUNNABLE: no session-scoped methodology anchor resolved (tried env-session-id, ups-marker, transcript-derived, recent-mtime)."
+    echo "NOT-RUNNABLE: no session-scoped methodology anchor resolved (tried env-session-id, ups-marker, transcript-derived)."
     echo "NOT-RUNNABLE: the v0.1.7+ heartbeat hooks may not be installed. Nothing was written; heartbeat enforcement is NOT in force at any tier."
     exit 3
 fi
@@ -168,5 +180,21 @@ sed -i "s/^TIER=.*/TIER=$NEW_TIER/" "$ANCHOR" || {
     echo "NOT-RUNNABLE: anchor resolved at $ANCHOR but could not be rewritten." >&2
     exit 3
 }
+
+# READ THE WRITE BACK BEFORE ANNOUNCING IT. sed SUCCEEDS when its substitution
+# matches nothing, so the || arm above catches only sed failing to run. An
+# anchor carrying no TIER= line therefore left this script printing "Anchor
+# TIER rewritten" at exit 0 over a byte-identical file. Reproduced 2026-09-04:
+# a fixture of LAST_HEARTBEAT=0 plus SOMETHING=else came back sha256-identical
+# (31a1223047a684a1 both sides) after `anchor-rewrite.sh T4` reported success,
+# against a control fixture carrying TIER= whose sha DID move. That is
+# CANNOT-RUN folded into PASS at the one point where a write happens, which is
+# the class the rest of this file was rewritten to eliminate. Exit 3 rather
+# than 1 because the tier was not applied and nothing is known about it, which
+# is the same state as the resolved-but-unwritable arm just above.
+if ! grep -qx "TIER=$NEW_TIER" "$ANCHOR"; then
+    echo "NOT-RUNNABLE: $ANCHOR has no TIER=$NEW_TIER line after the rewrite, so it carried no TIER= line to substitute. Nothing was written; heartbeat enforcement is NOT in force at any tier." >&2
+    exit 3
+fi
 echo "Anchor TIER rewritten to $NEW_TIER at $ANCHOR (resolved via $LAYER)"
 exit 0

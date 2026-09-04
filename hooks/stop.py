@@ -68,7 +68,17 @@ Stop hook beside this one, and no hook input says whether a goal is active.
 Every row this hook logs from main() now records the event's raw
 `stop_hook_active` value (true, false, or null when the field is absent), so
 the interaction between goal continuations and the silent-stop blocker can be
-measured from the log first. Recording only: nothing reads the field.
+measured from the log first. The logged value stays raw; the F024 bound
+below reads its own boolean copy, `reentry`.
+
+F024 re-entrancy bound on the silent-stop blocker. The blocker had no bound
+of any kind on consecutive {"decision":"block"} emits: no counter was kept,
+and the Stop event's own stop_hook_active field was never read, so an
+assistant that kept ending its turn on a tool_use with no text could be
+blocked and re-prompted without limit. The hook now stands down (logs
+"silent-stop-suppressed-reentry", emits nothing) when the harness reports
+stop_hook_active, so the blocker speaks at most once per user turn. This
+bounds only the re-prompt loop; first-fire detection is unchanged.
 """
 
 from __future__ import annotations
@@ -457,6 +467,11 @@ def main() -> int:
     # so goal-driven continuations can be measured before anything is
     # built on them. Recording only; no behaviour depends on it.
     stop_hook_active = event.get("stop_hook_active")
+    # F024: Claude Code sets stop_hook_active=true on the Stop event it fires
+    # as a RESULT of a previous Stop hook block. It is the harness's own
+    # re-entrancy signal and the documented way to keep a Stop hook from
+    # running indefinitely. Consumed by the silent-stop blocker below.
+    reentry = bool(stop_hook_active)
 
     # v1.3.0: refresh chat-claim ts before any early-return paths so claim
     # hygiene is independent of transcript / anchor availability.
@@ -521,7 +536,8 @@ def main() -> int:
         and b.get("type") in ("thinking", "redacted_thinking")
         for b in (blocks or [])
     )
-    if has_tool_use and not has_text and not has_thinking:
+    if (has_tool_use and not has_text and not has_thinking
+            and not reentry):
         time.sleep(0.5)  # OBS-S60-01: re-poll past Claude Code transcript flush race
         blocks = last_assistant_blocks(transcript_path)
         has_text = any(
@@ -539,6 +555,29 @@ def main() -> int:
             and b.get("type") in ("thinking", "redacted_thinking")
             for b in (blocks or [])
         )
+    # F024 re-entrancy bound. Nothing else in this file limits consecutive
+    # blocks: no counter is kept anywhere, and write_anchor() rewrites the
+    # anchor from only the keys it is passed, so a counter field would be
+    # dropped by the four-key heartbeat advance at the end of main(). Left
+    # unbounded, an assistant that keeps ending its turn on a tool_use with no
+    # text is blocked, re-prompted and blocked again with no limit inside the
+    # hook. Block once, then stand down: the first reason string already
+    # carries both escape sentinels, so a second identical block adds no
+    # information and only burns tokens. Recorded as its own diagnostic so
+    # soak data can tell a re-entrant stand-down apart from a turn that never
+    # had the silent-stop shape at all.
+    if has_tool_use and not has_text and not has_thinking and reentry:
+        append_log({
+            "ts": time.time(),
+            "hook": "stop",
+            "session_id": session_id,
+            "blocked": False,
+            "reason": "silent-stop-suppressed-reentry",
+            "claim_status": claim_status,
+            "routine_version": ROUTINE_VERSION,
+        })
+        return 0
+
     if has_tool_use and not has_text and not has_thinking:
         output = {
             "decision": "block",

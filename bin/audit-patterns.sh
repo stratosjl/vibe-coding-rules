@@ -89,10 +89,65 @@ SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-
 # The overlay file is gitignored (matches the existing *.local.* rule in
 # .gitignore); absence is normal for fresh public clones and unprivileged
 # CI environments.
+#
+# This branch used to be silent. A run with the overlay loaded and a run
+# without it left byte-identical variables behind, so no consumer could
+# tell a fully armed scan from the public subset: measured on the
+# operator machine at v1.24.0, DENY_PATTERNS is 9 entries with the
+# overlay and 2 without it, and nothing said which had been loaded. The
+# outcome is now published as data alongside the arrays.
+#
+# Data only, deliberately: this file prints nothing, because
+# test-audit-patterns.py reads the arrays back by capturing the stdout of
+# `source bin/audit-patterns.sh`, so anything written to stdout here
+# would corrupt what it parses. Reporting and gating belong to the
+# consumer, which is why absence stays a fact rather than an error here.
+#
+# Consumer contract, valid after the source line, alongside
+# DENY_PATTERNS / WARN_PATTERNS / PUBLIC_AUTHOR_EMAIL / SCAN_EXCLUDE:
+#   AUDIT_OVERLAY_FILE     resolved overlay path, set whether or not it exists
+#   AUDIT_OVERLAY_STATE    present | absent | unreadable
+#   AUDIT_OVERLAY_PRESENT  1 when the overlay was sourced, else 0
+#   AUDIT_DENY_SCAFFOLD    DENY entries this public scaffold defines
+#   AUDIT_DENY_OVERLAY     DENY entries the overlay appended, 0 when absent
+#   AUDIT_WARN_SCAFFOLD    WARN entries this public scaffold defines
+#   AUDIT_WARN_OVERLAY     WARN entries the overlay appended, 0 when absent
+#
+# The three-valued state exists because on a POSIX node [ -r ] is false
+# both for a missing overlay and for a present-but-unreadable one, and
+# only the first is the benign case described above. Collapsing them to
+# a 0 would make a consumer print "no operator-local overlay present"
+# over an overlay that is sitting right there and failed to load, which
+# is the one sentence a leak gate must not get wrong.
+#
+# Measured 2026-09-04 on the fleet's Windows node: MSYS [ -r ] reports
+# true for a file whose Windows ACL denies read, so the `unreadable`
+# arm does not fire there. That case is still safe and was checked
+# against this file at HEAD: both take the readable arm, the `.` then
+# fails with "Permission denied", and under the callers' `set -e` the
+# source aborts non-zero rather than scanning with the public subset.
+# Loud and fail-closed either way, so the arm is a POSIX refinement and
+# never the only thing standing between an unloadable overlay and a
+# green scan.
 _AUDIT_PATTERNS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_AUDIT_PATTERNS_LOCAL="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
-if [ -r "$_AUDIT_PATTERNS_LOCAL" ]; then
+AUDIT_OVERLAY_FILE="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
+AUDIT_DENY_SCAFFOLD=${#DENY_PATTERNS[@]}
+AUDIT_WARN_SCAFFOLD=${#WARN_PATTERNS[@]}
+if [ -r "$AUDIT_OVERLAY_FILE" ]; then
+  AUDIT_OVERLAY_STATE='present'
+  AUDIT_OVERLAY_PRESENT=1
   # shellcheck disable=SC1090
-  . "$_AUDIT_PATTERNS_LOCAL"
+  . "$AUDIT_OVERLAY_FILE"
+elif [ -e "$AUDIT_OVERLAY_FILE" ]; then
+  AUDIT_OVERLAY_STATE='unreadable'
+  AUDIT_OVERLAY_PRESENT=0
+else
+  AUDIT_OVERLAY_STATE='absent'
+  AUDIT_OVERLAY_PRESENT=0
 fi
-unset _AUDIT_PATTERNS_DIR _AUDIT_PATTERNS_LOCAL
+# Assignment form, never (( )): an arithmetic command evaluating to 0 exits
+# 1, which under the callers' `set -e` would abort the source at exactly
+# the no-overlay case this block exists to report.
+AUDIT_DENY_OVERLAY=$(( ${#DENY_PATTERNS[@]} - AUDIT_DENY_SCAFFOLD ))
+AUDIT_WARN_OVERLAY=$(( ${#WARN_PATTERNS[@]} - AUDIT_WARN_SCAFFOLD ))
+unset _AUDIT_PATTERNS_DIR

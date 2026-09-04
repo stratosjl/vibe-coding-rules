@@ -28,12 +28,28 @@ file path is fully synthetic.
 
 Pure stdlib. Cleans up its tempdirs on exit.
 
+Exit codes, per the F-EXIT-01 contract adopted at v1.24.0:
+
+    0  every case ran and every assertion held
+    1  a case ran and an assertion failed
+    2  usage error (the CALLER is wrong)
+    3  NOT-RUNNABLE: at least one case could not run on this platform
+
+A skipped case is COUNTED and named, in the summary line and in the exit
+code, because until v1.24.0 it was neither: a run that skipped a case
+was indistinguishable from a run where every case executed, and
+CHANGELOG.md quotes such a green as a coverage claim on the very
+platform where the boot_id case skips. Pass --allow-skips to accept a
+partial run as 0.
+
 Usage:
     python3 test-chat-claim.py
+    python3 test-chat-claim.py --allow-skips
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -68,25 +84,70 @@ def read_my_boot_id() -> str:
     return ""
 
 
+_HOOK_MODULE: Any = None
+
+
+def hook_module() -> Any:
+    """Load hooks/session-start.py so a fixture can call the hook's OWN
+    probes rather than re-implement them. A re-implementation that drifts
+    writes fixture values the hook can never produce, which is exactly the
+    defect recorded below. Deliberately not wrapped in a try: a harness that
+    cannot load the hook is broken rather than skippable, and a traceback
+    says so where a None would read as an absent probe.
+
+    Side effect, so it is not a surprise: importing the hook reconfigures
+    this process's stdout to utf-8 (its OBS-MET-AI module-level guard),
+    which is what the hook subprocess does anyway.
+    """
+    global _HOOK_MODULE
+    if _HOOK_MODULE is None:
+        spec = importlib.util.spec_from_file_location(
+            "vcroe_session_start_probe", SESSION_START)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _HOOK_MODULE = module
+    return _HOOK_MODULE
+
+
 def read_my_starttime() -> Optional[str]:
-    """v1.9.0: read THIS process's starttime via /proc/<pid>/stat (Linux only).
+    """v1.9.0: read THIS process's starttime, using the hook's own probe.
 
     Used to construct claims that genuinely match the test process so the
-    alive-pid path can be exercised. Returns None on non-Linux.
+    alive-pid path can be exercised. None only where no probe exists at all
+    (macOS and anything else), and a case that names the starttime
+    comparison must then SKIP rather than run.
+
+    Until v1.24.0 this was a Linux-only /proc reader, so on the Windows node
+    every v1.9.0 fixture wrote pid_starttime: null, and evaluate_claim took
+    its is_pid_alive fallback instead of the starttime comparison the cases
+    are named for (both arms live in evaluate_claim's Layer 1 probe).
+    Measured 2026-09-04 on the Windows node, one live-owner claim in two
+    shapes, with the probe mutated to report a recycled PID:
+
+        real starttime -> ('take-orphan', 'pid-recycled')
+        null           -> ('refuse', 'active-claim-conflict')
+
+    Nine of the 27 cases write a pid_starttime into a fixture claim, and
+    eight of those run here (the ninth, the boot_id case, skips). Every
+    one wrote null, so every one exercised the is_pid_alive fallback
+    rather than the comparison, and against the Layer 1 fixture the
+    pid-recycle mutation was invisible on that branch. The hook has
+    carried a working win32 GetProcessTimes probe in read_pid_starttime
+    since v1.9.0; only this helper was Linux-only.
     """
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        content = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
-        close = content.rfind(")")
-        if close < 0:
-            return None
-        fields = content[close + 1:].split()
-        if len(fields) < 20:
-            return None
-        return fields[19]
-    except Exception:
-        return None
+    return hook_module().read_pid_starttime(os.getpid())
+
+
+def starttime_probe_is_expected() -> bool:
+    """True where hooks/session-start.py's read_pid_starttime implements a
+    probe: Linux reads /proc/<pid>/stat, win32 uses GetProcessTimes, and
+    there is no probe anywhere else.
+
+    Stated once because it is asserted at two call sites, and the drift
+    between those two is what this pass repairs: one of them read
+    "on Linux" while the hook had probed win32 since v1.9.0.
+    """
+    return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
 def my_hostname() -> str:
@@ -168,7 +229,9 @@ def make_test_cwd(tmp: Path, name: str) -> Path:
 
 PASS = 0
 FAIL = 0
+SKIPPED = 0
 FAILURES: list[str] = []
+SKIPS: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -180,6 +243,19 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         FAIL += 1
         FAILURES.append(f"{name}: {detail}")
         print(f"  FAIL  {name}  -- {detail}")
+
+
+def skip(case: str, why: str) -> None:
+    """Record a case that could not run on this platform.
+
+    A bare print was the whole mechanism until v1.24.0, and a bare print
+    moves neither tally, so the summary line and the exit code rendered a
+    skipped run exactly as they render a complete one. This feeds both.
+    """
+    global SKIPPED
+    SKIPPED += 1
+    SKIPS.append(f"{case}: {why}")
+    print(f"  SKIP  {case}  -- {why}")
 
 
 def case_no_existing_claim_takes_new(home: Path, tmp: Path) -> None:
@@ -196,8 +272,15 @@ def case_no_existing_claim_takes_new(home: Path, tmp: Path) -> None:
         check("claim session_id matches", claim.get("session_id") == sid)
         check("claim ts present", isinstance(claim.get("ts"), int))
     check("no refusal banner in stdout", "CHAT-CLAIM CONFLICT" not in out)
-    check("trace shows take-new", '"chat_claim_action": "take-new"' in out
-          or 'take-new' in out, f"out-tail={out[-300:]}")
+    # Assert the RENDERED trace line and nothing weaker. The JSON-pair
+    # spelling never reaches stdout at all (session-start.py emits a
+    # markdown bullet into additionalContext and logs the JSON pair to a
+    # file), so that arm was False in every run; and a bare 'take-new'
+    # also matches the fixture cwd 'proj-take-new' echoed on the signals
+    # and project_root lines, so the old two-arm check still passed with
+    # the trace line deleted. Same idiom as the OBS-S67-01 case below.
+    check("trace shows take-new", "- chat_claim_action: take-new" in out,
+          f"out-tail={out[-300:]}")
 
 
 def case_same_session_resumes(home: Path, tmp: Path) -> None:
@@ -234,8 +317,12 @@ def case_different_session_within_ttl_refuses(home: Path, tmp: Path) -> None:
     check("banner cites owning session", other_sid[:8] in out)
     claim = read_claim(cp)
     check("existing claim untouched", claim is not None and claim.get("session_id") == other_sid)
-    check("trace shows refuse", '"chat_claim_action": "refuse"' in out
-          or 'refuse' in out)
+    # Rendered form only, for the reason recorded at
+    # case_no_existing_claim_takes_new: a bare 'refuse' also matches the
+    # fixture cwd 'proj-refuse' on the banner, signals and project_root
+    # lines, so the old check survived deletion of the line it guards.
+    check("trace shows refuse", "- chat_claim_action: refuse" in out,
+          f"out-tail={out[-300:]}")
 
 
 def case_different_session_past_ttl_takes_orphan(home: Path, tmp: Path) -> None:
@@ -399,9 +486,22 @@ def case_alive_pid_within_ttl_refuses(home: Path, tmp: Path) -> None:
     # the TTL evaluation; the claim is fresh -> refuse.
     my_pid = os.getpid()
     my_st = read_my_starttime()
-    if my_st is None and sys.platform.startswith("linux"):
-        check("read_my_starttime returned non-None on Linux", False,
-              "harness regression: cannot read own /proc/<pid>/stat")
+    if my_st is None:
+        if starttime_probe_is_expected():
+            # read_pid_starttime implements a probe on both of these, so a
+            # None here is a broken harness, not an absent capability, and
+            # it stays a loud FAIL as it was before v1.24.0.
+            check("read_my_starttime returned non-None where the hook probes",
+                  False, f"harness regression on {sys.platform}")
+            return
+        # Nothing to probe with on this platform, so the claim would carry
+        # pid_starttime: null and the hook would take its is_pid_alive
+        # fallback instead of the comparison this case is named for. A
+        # COUNTED skip rather than a bare print: an uncounted one is
+        # invisible in the summary line and in the exit code alike.
+        skip("alive PID + matching starttime + within TTL (Layer 1)",
+             f"no pid-starttime probe on {sys.platform}; "
+             "this case asserts the starttime comparison")
         return
     write_claim_v9(cp, other_sid, ts=int(time.time()) - 60,
                    host=my_hostname(), pid=my_pid,
@@ -424,8 +524,12 @@ def case_boot_id_mismatch_takes_orphan(home: Path, tmp: Path) -> None:
     cp = claim_path(home, cwd)
     our_boot = read_my_boot_id()
     if not our_boot:
-        # Non-Linux: skip; boot_id probe is Linux-only.
-        print("  SKIP  (boot_id not available on this platform)")
+        # The boot_id probe is Linux-only, so on any other platform there
+        # is nothing to mismatch against. Counted, so the summary line and
+        # the exit code can both see that this case did not run.
+        skip("boot_id mismatch + same host -> take-orphan (Layer 1)",
+             f"no boot_id probe on {sys.platform} "
+             f"({BOOT_ID_PATH} is not readable here)")
         return
     # Use a guaranteed-different boot_id (different UUID).
     fake_boot = "00000000-0000-0000-0000-000000000000"
@@ -675,8 +779,16 @@ def case_reader_coexist_no_overwrite(home: Path, tmp: Path) -> None:
     # Existing reader claim, alive (uses this process pid+starttime to pass
     # liveness probe).
     my_st = read_my_starttime()
-    if my_st is None and sys.platform.startswith("linux"):
-        check("read_my_starttime on Linux", False, "harness regression")
+    if my_st is None and starttime_probe_is_expected():
+        # The same harness-health guard as the Layer 1 case above. It read
+        # "on Linux" until v1.24.0 while the hook had probed win32 since
+        # v1.9.0, so on the Windows node it could not fire. No skip arm
+        # here: this case is named for reader-coexist, not for the
+        # starttime comparison, and it reaches that verdict on the
+        # is_pid_alive fallback too, so a probe-less platform still
+        # exercises what the case asserts.
+        check("read_my_starttime returned non-None where the hook probes",
+              False, f"harness regression on {sys.platform}")
         return
     write_claim_v10_reader(cp, other_sid, ts=int(time.time()) - 60,
                            host=my_hostname(), pid=os.getpid(),
@@ -948,7 +1060,16 @@ def case_pid_remote_host_falls_through(home: Path, tmp: Path) -> None:
           claim is not None and claim.get("session_id") == other_sid)
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    allow_skips = False
+    while "--allow-skips" in args:
+        allow_skips = True
+        args.remove("--allow-skips")
+    if args:
+        print(f"usage: {Path(__file__).name} [--allow-skips]", file=sys.stderr)
+        print(f"unrecognised argument(s): {' '.join(args)}", file=sys.stderr)
+        return 2
     print("vc-roe chat-claim regression suite (v1.10.0)")
     home = Path(tempfile.mkdtemp(prefix="vcroe-test-home-"))
     tmp = Path(tempfile.mkdtemp(prefix="vcroe-test-cwd-"))
@@ -987,11 +1108,22 @@ def main() -> int:
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
-    print(f"\nResults: {PASS} pass, {FAIL} fail")
+    print(f"\nResults: {PASS} pass, {FAIL} fail, {SKIPPED} skipped")
+    for f in FAILURES:
+        print(f"  - FAIL  {f}")
+    # Skips are listed on a green too. A pass with an unstated denominator
+    # reads as full coverage, which is the whole defect being repaired.
+    for s in SKIPS:
+        print(f"  - SKIP  {s}")
     if FAIL:
-        for f in FAILURES:
-            print(f"  - {f}")
+        print("VERDICT: FAIL  (do not pipe this; the verdict is the exit code)")
         return 1
+    if SKIPPED and not allow_skips:
+        print(f"VERDICT: NOT-RUNNABLE  ({SKIPPED} of the suite's cases could "
+              f"not run on {sys.platform}; pass --allow-skips to accept a "
+              "partial run as 0)")
+        return 3
+    print("VERDICT: PASS  (do not pipe this; the verdict is the exit code)")
     return 0
 
 

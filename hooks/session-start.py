@@ -94,6 +94,28 @@ def _resolve_plugin_root() -> Path:
 
 PLUGIN_ROOT = _resolve_plugin_root()
 
+# The env root and this file's own root can be two DIFFERENT bundles, and until
+# v1.25.0 nothing said so. _resolve_plugin_root() accepts any CLAUDE_PLUGIN_ROOT
+# that merely looks like a bundle, so a sibling or a stale vc-roe in the plugin
+# cache passes that test. Measured 2026-09-04: with the env var aimed at such a
+# root, the slice served to the assistant came from there while routine_version
+# still read THIS bundle's manifest, and write_anchor_if_missing() then stamped
+# PLUGIN_ROOT and PLUGIN_VERSION into one anchor as though they named one object.
+# Recording the provenance does not pick a winner between them, which would undo
+# the deliberate I-22 choice below; it makes the split greppable in the trace
+# instead of invisible. Compare RESOLVED forms, or a trailing slash or a case
+# difference in an otherwise correct env value reads as an override.
+PLUGIN_ROOT_SELF = Path(__file__).resolve().parent.parent
+try:
+    _plugin_root_is_self = PLUGIN_ROOT.resolve() == PLUGIN_ROOT_SELF
+except Exception:
+    _plugin_root_is_self = False
+PLUGIN_ROOT_PROVENANCE = (
+    "self"
+    if _plugin_root_is_self
+    else f"env-override, DIFFERS from this file's own bundle at {PLUGIN_ROOT_SELF}"
+)
+
 DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -301,6 +323,55 @@ def score_scope(project_root: Path, rules: dict[str, Any]) -> tuple[str, list[st
     return s, signals
 
 
+def match_regulatory_keywords(text: str, keywords: list[str]) -> list[str]:
+    """Keywords present in `text` as WHOLE WORDS, each token counted once.
+
+    Until v1.25.0 this was `kw.upper() in text.upper()`, an unanchored substring
+    test, and the shipped keyword list carries three-letter entries that sit
+    inside ordinary English. Measured 2026-09-04 against the shipped
+    detection-rules.json: "This repo has a compliance section." scored TWO hits
+    (compliance, and LIA inside COMPLIANCE) which is C2, which the tier matrix
+    maps to T3 at every scope. "Built on Fedora Linux." matched DORA; "Some
+    regulatory text here." matched the keyword "regulator"; "A familiar
+    interface." matched LIA. So one ordinary word reached the full T3 ceremony,
+    and the threshold documented as a SECOND keyword (methodology-content/T2.md
+    line 79) could not discriminate anything.
+
+    Two rules, and the second matters because the keyword list is operator
+    editable and may grow overlapping entries:
+
+    1. A keyword matches only when it is not flanked by another letter or digit.
+       Hyphens and dots still count as boundaries, so "audit-trail" and "GDPR."
+       both match.
+    2. A hit whose matched span is CONTAINED in another hit's span is dropped,
+       so one region of text contributes at most one keyword. Without this, a
+       list holding both "audit" and "audit-trail" would score the single token
+       "audit-trail" twice and re-open the same defect by configuration.
+
+    Order follows the keyword list, matching the previous behaviour so the
+    C:<kw> trace signals stay comparable across versions.
+    """
+    spans: list[tuple[str, int, int]] = []
+    for kw in keywords:
+        if not kw:
+            continue
+        pat = rf"(?<![0-9A-Za-z]){re.escape(kw)}(?![0-9A-Za-z])"
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            spans.append((kw, m.start(), m.end()))
+
+    kept: list[str] = []
+    for kw, start, end in spans:
+        contained = any(
+            other_kw != kw and other_start <= start and end <= other_end
+            and (other_end - other_start) > (end - start)
+            for other_kw, other_start, other_end in spans
+        )
+        if not contained:
+            kept.append(kw)
+    return kept
+
+
 def score_criticality(project_root: Path, rules: dict[str, Any]) -> tuple[str, list[str]]:
     c = "C0"
     signals: list[str] = []
@@ -319,8 +390,7 @@ def score_criticality(project_root: Path, rules: dict[str, Any]) -> tuple[str, l
     text = "\n".join(text_parts)
 
     rk = rules.get("regulatory_keywords", [])
-    text_upper = text.upper()
-    hits = [kw for kw in rk if kw.upper() in text_upper]
+    hits = match_regulatory_keywords(text, rk)
     if hits:
         signals.extend(f"C:{kw}" for kw in hits)
 
@@ -526,6 +596,140 @@ SLICE_NOT_RUNNABLE = (
     "run `/vc-roe:tier <TIER>` which loads the slice from the session's own recorded\n"
     "plugin root.\n"
 )
+
+
+HOOK_NOT_RUNNABLE = (
+    "# NOT-RUNNABLE: vc-roe could not start\n"
+    "\n"
+    "Failed at: {phase}\n"
+    "{path_label}: `{path}`\n"
+    "Reason: {reason}\n"
+    "\n"
+    "**No methodology rules are in force for this session, and no tier was\n"
+    "detected.** Nothing below prescribes anything, and no tier banner is owed.\n"
+    "\n"
+    "Say in your FIRST reply that vc-roe failed to load, quote the path and the\n"
+    "reason above, and ask the operator whether to continue with no methodology in\n"
+    "force or to repair the install. Do not reconstruct the rules from memory: a\n"
+    "rule set you half-remember is indistinguishable, in the transcript, from one\n"
+    "that loaded.\n"
+    "\n"
+    "Repair: {repair}\n"
+)
+
+
+# The banner above is phase-agnostic; its PATH LABEL and its REPAIR line are not,
+# and one generic repair line sends the reader to the thing that is fine. Measured
+# 2026-09-04 with a required key deleted from a copied detection-rules.json: the
+# banner read "Expected at: <...>/detection-rules.json" and "Repair: confirm the
+# plugin is installed ... and that the path above exists and is readable" for a
+# file that existed and was perfectly readable. So each phase names what the path
+# IS and what would actually repair it. An unknown phase falls back to the generic
+# pair, so a new call site is never left with no repair line at all.
+_NOT_RUNNABLE_GENERIC = (
+    "Expected at",
+    "confirm the plugin is installed and enabled and that the path above exists "
+    "and is readable, then re-open the session",
+)
+_NOT_RUNNABLE_PHASES: dict[str, tuple[str, str]] = {
+    "stdin_parse": (
+        "Event source",
+        "the SessionStart event could not be parsed, so nothing about this session "
+        "is known. Re-open the session; if it recurs the reason above describes the "
+        "event feed rather than the install",
+    ),
+    "load_rules": (
+        "Expected at",
+        "confirm the plugin is installed and enabled and that the path above "
+        "exists, is readable, and holds valid JSON, then re-open the session",
+    ),
+    "detect_tier": (
+        "Rules file",
+        "the rules file was READ but detection failed on it, so the install is "
+        "present and its CONTENT is the suspect. Diff the path above against the "
+        "shipped detection-rules.json: a renamed or removed key reads exactly like "
+        "this, and the reason above names it",
+    ),
+}
+
+
+def _describe_addon_module(module: Any) -> str:
+    """`<absolute path> sha256:<12 hex>` for a loaded addon module, or a reason.
+
+    Emitted by the HOOK rather than returned by the addon, because the addon is
+    the thing being attributed. Never raises: attribution failing must not be
+    able to take session start down, so every failure renders as a token.
+    """
+    if module is None:
+        return "loaded-but-unattributable(no module object)"
+    src_path = getattr(module, "__file__", None)
+    if not src_path:
+        return "loaded-but-unattributable(no __file__)"
+    try:
+        import hashlib
+        resolved = Path(src_path).resolve()
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()[:12]
+        return f"{resolved} sha256:{digest}"
+    except Exception as e:
+        return f"{src_path} sha256:unreadable({type(e).__name__})"
+
+
+def emit_not_runnable(phase: str, path: Any, reason: str) -> int:
+    """Emit a LOUD not-runnable context instead of returning silently.
+
+    Until v1.25.0 a stdin_parse(), load_rules() or detect_tier() failure hit
+    `return 0` having written NOTHING at all. Measured 2026-09-04,
+    detection-rules.json both corrupt and absent: rc=0, 0 bytes of stdout, 0
+    bytes of stderr, against a healthy control of 3472 bytes. The session then
+    ran with NO methodology and no surface anywhere said so, which is the same
+    cannot-run-rendered-as-pass that load_slice() was given a banner for in
+    v1.24.0, one layer further out.
+
+    The exit code stays 0 deliberately, and this is the one place that decision
+    is worth stating. README:141 and this module's own docstring both make
+    "always exit 0" the standing contract for this hook, so the F-EXIT-01 code 3
+    is not reachable here without changing that contract. The banner in
+    additionalContext is what reaches the only consumer that can act on the
+    failure, so loud in the context beats correct in the exit code when the two
+    conflict. The stderr line is the second channel, for the harness log.
+
+    NOT VERIFIED, and recorded as unverified rather than dropped because it is
+    the argument someone will re-derive: it is commonly ASSUMED that a
+    SessionStart hook exiting non-zero has its stdout discarded by the harness,
+    which would make exiting 3 actively suppress this banner. That was not
+    reproduced here. The contract above stands on README:141 alone, which is
+    checkable; do not cite the harness claim as though it had been measured.
+    """
+    label, repair = _NOT_RUNNABLE_PHASES.get(phase, _NOT_RUNNABLE_GENERIC)
+    try:
+        sys.stderr.write(
+            f"vc-roe session-start: NOT-RUNNABLE at {phase}: {path}: {reason}\n"
+        )
+    except Exception:
+        pass
+    try:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": HOOK_NOT_RUNNABLE.format(
+                            phase=phase,
+                            path_label=label,
+                            path=path,
+                            reason=reason,
+                            repair=repair,
+                        ),
+                    }
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        sys.stdout.flush()
+    except Exception:
+        pass
+    return 0
 
 
 def load_slice(tier: str) -> str:
@@ -770,13 +974,13 @@ def is_in_git_worktree(cwd: Path) -> bool:
     try:
         common = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         if common.returncode != 0:
             return False
         gitdir = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         if gitdir.returncode != 0:
             return False
@@ -790,6 +994,19 @@ def is_in_git_worktree(cwd: Path) -> bool:
         return False
 
 
+def _hookspath_token(value: str) -> str:
+    """One safe single-line token for a foreign core.hooksPath value.
+
+    The value is repository config written by someone else and is rendered into
+    both the trace line and an operator-facing banner, so a newline in it would
+    forge trace lines. Take the first line and bound the length.
+    """
+    first = (value.splitlines() or [""])[0].strip()
+    if len(first) > 120:
+        first = first[:117] + "..."
+    return first or "(empty)"
+
+
 def ensure_pre_push_gate_armed(cwd: Path) -> str:
     """Self-heal the pre-push publish-audit gate when the session runs inside
     the vibe-coding-rules working tree itself.
@@ -801,10 +1018,16 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
     pre-push audit (OBS-AUD-2, audit-pass-discharge-2026-06-24). To make the
     gate self-arming, detect that exact state at SessionStart and re-set it.
 
-    Scoped to THIS repo ONLY: fires solely when the cwd's git root carries
-    BOTH `.githooks/pre-push` and `bin/install-hooks.sh` (i.e. it IS the
-    vibe-coding-rules clone). For any project that merely installs the plugin
-    this is a silent no-op returning "n/a" — no global nag.
+    Scope test, stated as what it MEASURES rather than as what it concludes:
+    it fires when the cwd's git root carries BOTH `.githooks/pre-push` and
+    `bin/install-hooks.sh`. Those are ordinary filenames, so that is a
+    heuristic for "this is the vibe-coding-rules clone" and NOT an identity
+    check; a repo of anyone's that happens to carry both matches it. Measured
+    2026-09-04: a throwaway repo with no origin remote and no `.claude-plugin/`
+    matched. The consequence is bounded by the foreign-hookspath arm below,
+    which refuses to overwrite a value someone else set; what remains is that
+    an UNSET core.hooksPath in such a repo is still written. For any project
+    that merely installs the plugin this is a silent no-op returning "n/a".
 
     The executable bit on `.githooks/pre-push` is tracked in-repo (mode
     100755), so a fresh clone already has it; the only missing piece is
@@ -812,7 +1035,8 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
 
     Fully fail-soft: any error degrades to a trace token and never affects
     session start. Returns one of: "n/a" (not this repo / undetectable),
-    "armed" (already correct), "re-armed" (was unset/wrong, now fixed),
+    "armed" (already correct), "re-armed" (was genuinely UNSET, now set),
+    "foreign-hookspath:<observed>" (was set to something else, left untouched),
     "rearm-failed" (gap detected but could not set it).
     """
     try:
@@ -828,24 +1052,38 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
             cur = subprocess.run(
                 ["git", "-C", str(git_root), "config", "--local",
                  "--get", "core.hooksPath"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
         except Exception:
             return "n/a"
         current = cur.stdout.strip() if cur.returncode == 0 else ""
         if current == ".githooks":
             return "armed"
-        # Bypass state: the publish-audit gate is inert. Re-arm it.
+        if current:
+            # F030/F031, measured 2026-09-04: a throwaway repo carrying the two
+            # marker files with core.hooksPath deliberately set to ".myhooks"
+            # had that value SILENTLY REPLACED by ".githooks" from a SessionStart
+            # hook, with no confirmation and no undo, disabling whatever hooks
+            # that repo was actually using. A non-empty differing value is a
+            # deliberate configuration. Report it, name it, and change nothing.
+            return "foreign-hookspath:" + _hookspath_token(current)
+        if cur.returncode not in (0, 1):
+            # git exits 1 for "key not found", i.e. genuinely unset. Any OTHER
+            # non-zero means git could not answer, which is not evidence that
+            # the key is unset. The branch below MUTATES repository config, so
+            # an unanswered probe must not reach it.
+            return "n/a"
+        # Genuinely unset: the publish-audit gate is inert. Re-arm it.
         try:
             subprocess.run(
                 ["git", "-C", str(git_root), "config", "--local",
                  "core.hooksPath", ".githooks"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             verify = subprocess.run(
                 ["git", "-C", str(git_root), "config", "--local",
                  "--get", "core.hooksPath"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
         except Exception:
             return "rearm-failed"
@@ -1155,7 +1393,11 @@ def main() -> int:
         event = json.loads(raw) if raw.strip() else {}
     except Exception as e:
         append_log({"ts": time.time(), "phase": "stdin_parse", "error": str(e)})
-        return 0
+        # Third of the three early returns that used to vanish silently. It is
+        # the same class of failure as load_rules and detect_tier below: the
+        # session runs with no methodology and rc=0, 0 bytes out, 0 bytes err is
+        # byte-identical from the harness side to a hook that ran fine.
+        return emit_not_runnable("stdin_parse", "<stdin>", str(e))
 
     cwd_raw = event.get("cwd") or os.getcwd()
     cwd = Path(cwd_raw)
@@ -1165,7 +1407,7 @@ def main() -> int:
         rules = load_rules()
     except Exception as e:
         append_log({"ts": time.time(), "phase": "load_rules", "error": str(e)})
-        return 0
+        return emit_not_runnable("load_rules", DETECTION_RULES_PATH, str(e))
 
     try:
         detection = detect_tier(cwd, env, rules)
@@ -1176,7 +1418,7 @@ def main() -> int:
             "error": str(e),
             "cwd": str(cwd),
         })
-        return 0
+        return emit_not_runnable("detect_tier", DETECTION_RULES_PATH, str(e))
 
     # v0.3.0 D-MET-62: apply project tier floor when tier was auto-detected.
     # CLAUDE.md sentinel / .claude/methodology.json / CLAUDE_TIER env remain
@@ -1234,17 +1476,44 @@ def main() -> int:
     # directory and skip this entirely. Fully fail-soft: any import or runtime
     # issue degrades to an empty block and never affects session start.
     addon_block, addon_state = "", "none"
+    addon_source = "n/a"
     try:
         _addon_dir = Path.home() / ".claude" / "vc-roe-addons"
         if _addon_dir.is_dir():
+            # Set before the import so that an addon which fails to import is
+            # distinguishable in the trace from "there is no addon directory".
+            addon_source = f"{_addon_dir} (module not loaded)"
             if str(_addon_dir) not in sys.path:
                 # vc-roe:runtime-state operator-local extension point, not a code
                 # dependency of any check. Its three states (absent / error /
                 # loaded) are DISTINGUISHABLE in the trace as session_start_addon,
                 # and none of them changes the verdict of anything, which is what
                 # the F-EXIT-01 contract actually requires.
-                sys.path.insert(0, str(_addon_dir))
+                #
+                # APPEND, never insert(0). Position 0 puts this directory ahead of
+                # the STDLIB for the rest of the process, and this hook goes on to
+                # lazily `import ctypes` inside read_pid_starttime() and
+                # is_pid_alive() on the Windows node. Measured 2026-09-04: a
+                # ctypes.py placed in the addon directory was imported in place of
+                # the stdlib module, and the liveness probe then reported a live
+                # owner as dead; with the same file removed the shadow did not
+                # fire, so the directory position was the variable. Appending
+                # leaves the stdlib and site-packages earlier in the search order
+                # while still resolving the addon and the siblings it imports
+                # alongside itself, which spec_from_file_location would not.
+                sys.path.append(str(_addon_dir))
             from vc_roe_local_addons import session_start_block  # type: ignore
+            # F027 attribution. The addon's block is spliced verbatim into the
+            # governed additionalContext, and until v1.25.0 the ONLY record of it
+            # was the one-word state token -- which the addon RETURNS, so the
+            # 'three distinguishable states' defence rested on the addon behaving.
+            # These two facts are taken BY THE HOOK from the imported module, so
+            # an addon cannot report a source it does not have, and an injected
+            # block is attributable to a file and a revision from the transcript
+            # alone. Read before the call, so it survives a raising addon.
+            addon_source = _describe_addon_module(
+                sys.modules.get("vc_roe_local_addons")
+            )
             addon_block, addon_state = session_start_block(detection, tier)
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -1361,6 +1630,22 @@ def main() -> int:
             "(core.hooksPath unset) and automatic re-arm FAILED. Run "
             "`bash bin/install-hooks.sh` before your next push (OBS-AUD-2).\n\n"
         )
+    elif gate_state.startswith("foreign-hookspath:"):
+        # F031: the old code reached this state, called it "re-armed", and
+        # asserted "(core.hooksPath was unset)" over an observed value of
+        # ".myhooks". The banner now states what was actually measured and
+        # says plainly that nothing was changed, the way bin/install-hooks.sh:63
+        # already reports the previous value.
+        _observed = gate_state.split(":", 1)[1]
+        gate_banner_text = (
+            "> WARNING: the vc-roe pre-push publish-audit gate is INERT. This "
+            "clone's `core.hooksPath` is set to `" + _observed + "`, not "
+            "`.githooks`, so the versioned publish-audit hooks do not run and "
+            "your next `git push` from here is NOT gated. vc-roe left the value "
+            "alone rather than overwriting a setting you made. If you want the "
+            "gate, reconcile that hooks path with `.githooks` yourself, or run "
+            "`bash bin/install-hooks.sh` to replace it (OBS-AUD-2).\n\n"
+        )
     additional = (
         f"{claim_banner_text}"
         f"{gate_banner_text}"
@@ -1377,11 +1662,13 @@ def main() -> int:
         f"- project_root: {detection.get('project_root', str(cwd))}\n"
         f"- git_root_found: {detection.get('git_root_found', False)}\n"
         f"- routine_version: {ROUTINE_VERSION}\n"
+        f"- plugin_root: {PLUGIN_ROOT} ({PLUGIN_ROOT_PROVENANCE})\n"
         f"- chat_claim_action: {claim_action}\n"
         f"- chat_claim_ttl_hours: {ttl_hours}\n"
         f"- publish_state: {publish_state_line}\n"
         f"- pre_push_gate: {gate_state}\n"
         f"- session_start_addon: {addon_state}\n"
+        f"- session_start_addon_source: {addon_source}\n"
     )
 
     output = {
@@ -1415,6 +1702,8 @@ def main() -> int:
         "project_root": detection.get("project_root", str(cwd)),
         "git_root_found": detection.get("git_root_found", False),
         "routine_version": ROUTINE_VERSION,
+        "plugin_root": str(PLUGIN_ROOT),
+        "plugin_root_provenance": PLUGIN_ROOT_PROVENANCE,
         "chat_claim_action": claim_action,
         "chat_claim_info": claim_info,
         "chat_claim_ttl_hours": ttl_hours,

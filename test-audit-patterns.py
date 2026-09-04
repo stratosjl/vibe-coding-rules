@@ -8,7 +8,12 @@ to `git grep -nE`, which skips untracked files. This test substitutes
 that probe with a pattern-level unit assertion: each DENY and WARN
 regex in bin/audit-patterns.sh is verified to match at least one
 synthetic fixture line built at runtime by sanitizing the pattern to
-its literal form.
+its literal form. A pattern whose ERE this sanitizer cannot model is
+counted as a skip, not a failure, and the pass line states the
+denominator, so a partial run cannot read as full coverage. A pattern
+the sanitizer DOES model but Python's `re` cannot compile is put through
+`grep -E`, the engine family the gate itself scans with, rather than
+skipped: skipping it would leave that arm unable to fail.
 
 The fixture strings are constructed from the patterns sourced from
 bin/audit-patterns.sh at test time; no pattern literal is hard-coded
@@ -26,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -61,6 +67,44 @@ def _class_literal(cls_body: str) -> str:
     return "x"
 
 
+class UnsupportedConstruct(ValueError):
+    """The sanitizer cannot build a fixture for this pattern.
+
+    Distinct from a malformed pattern: it says the INSTRUMENT is too
+    narrow, not that the subject is broken. T2's exit-code contract puts
+    it as "the loud symptom points at the subject rather than at the
+    instrument", and this is the arm where that happens.
+
+    It is reached by ordinary correct overlay entries, not by exotic
+    ones. bin/audit-patterns.local.sh.example line 9 tells the operator
+    to write the overlay in extended-grep syntax, and alternation is core
+    ERE, so a DENY entry of the form `Firm (Asset|Capital) Management`
+    lands here. Measured 2026-09-04 on a synthetic overlay: it raised,
+    main() counted it a failure, Tool 5 went FAIL, and the aggregate
+    blocked every push from that clone until the overlay was edited. A
+    fixture this test cannot build is not a leak, so it must not block.
+
+    grep_e_matches() raises it for the one remaining undecidable case:
+    a pattern that sanitizes here and that `grep -E` itself refuses, so
+    neither engine can say whether the pattern matches its own fixture.
+    """
+
+
+class Unrunnable(RuntimeError):
+    """A guard's dependency is absent, so the guard did not run.
+
+    Distinct from the strings a guard RETURNS, which are assertion
+    failures about the subject. methodology-content/T2.md:55 defines
+    exit 3 as "NOT-RUNNABLE: a dependency is missing, the ENVIRONMENT is
+    wrong", and its class list at line 65 names "a hook whose helper
+    moved". bin/publish-audit-state.sh is the helper of two guards here,
+    so its absence is that case and not a finding about the pattern set.
+    Raised rather than returned so it cannot be appended to the same list
+    that carries real assertion failures, which is how the two used to
+    share exit 1 and send a reader hunting a leak-pattern regression.
+    """
+
+
 def sanitize_to_literal(pattern: str) -> str:
     """Build a literal that the ERE pattern matches.
 
@@ -69,8 +113,14 @@ def sanitize_to_literal(pattern: str) -> str:
     escaped whitespace (single space), single-bracket character class
     with optional `+`/`*`/`?` quantifier.
 
-    Raises ValueError on unsupported ERE meta so a future pattern
-    change surfaces as a test failure rather than a silent miss.
+    Raises UnsupportedConstruct for ERE meta this sanitizer does not
+    model, and plain ValueError for a pattern that is malformed. main()
+    counts the first as a skip and fails on the second.
+
+    No message raised here carries the pattern text. These arrays include
+    the gitignored operator overlay, so anything printed reaches the
+    combined harness's row detail (bin/publish-audit-combined.sh:204
+    takes the last line of the run) and every log that captures it.
     """
     out: list[str] = []
     i = 0
@@ -94,7 +144,7 @@ def sanitize_to_literal(pattern: str) -> str:
         elif ch == "[":
             j = pattern.find("]", i + 1)
             if j == -1:
-                raise ValueError(f"Unterminated character class in pattern: {pattern!r}")
+                raise ValueError("Unterminated character class")
             out.append(_class_literal(pattern[i + 1 : j]))
             i = j + 1
             if i < len(pattern) and pattern[i] in "*+?":
@@ -107,14 +157,11 @@ def sanitize_to_literal(pattern: str) -> str:
             # preceding token is malformed. This is what lets a pattern with an
             # optional trailing literal char (e.g. a plural `s?`) sanitize.
             if not out:
-                raise ValueError(
-                    f"Quantifier {ch!r} with no preceding token in {pattern!r}"
-                )
+                raise ValueError(f"Quantifier {ch!r} with no preceding token")
             i += 1
         elif ch in ("^", "$", "(", ")", "|", "{"):
-            raise ValueError(
-                f"Pattern uses unsupported ERE meta {ch!r} in {pattern!r}; "
-                f"extend sanitize_to_literal."
+            raise UnsupportedConstruct(
+                f"unsupported ERE meta {ch!r}; extend sanitize_to_literal"
             )
         else:
             out.append(ch)
@@ -124,6 +171,55 @@ def sanitize_to_literal(pattern: str) -> str:
 
 def build_fixture(literal: str) -> str:
     return f"sample-context [{literal}] trailing-context"
+
+
+def grep_e_matches(pattern: str, fixture: str) -> bool:
+    """Ask the engine the GATE uses whether PATTERN matches FIXTURE.
+
+    bin/publish-audit.sh scans with `git grep -nE`, so ERE is the
+    authority on these arrays and Python's `re` is only a convenience.
+    A pattern Python cannot compile is therefore not undecidable, and
+    treating it as undecidable widens the leak gate: measured 2026-09-04
+    with GNU grep 3.0, a DENY entry of the shape `zsynth\\U[^a]` is
+    rejected by Python, accepted by `grep -E`, and does NOT match the
+    fixture this file builds for it. That is a pattern which cannot
+    match what it was written to match, and it is precisely what this
+    test exists to report.
+
+    Returns True on a match and False on a clean no-match. Raises
+    UnsupportedConstruct only when grep itself declines the pattern
+    (rc 2, e.g. an invalid back reference), which is the one case
+    neither engine can decide.
+
+    Both the pattern and the fixture travel in the ENVIRONMENT, never on
+    the command line. These arrays carry the gitignored operator overlay
+    and the fixture is derived from it, so neither belongs in a process
+    listing any more than in the stderr this file already keeps them out
+    of. Nothing here is returned or printed either: grep's stderr quotes
+    the pattern on a rejection, so it is captured and discarded.
+    """
+    env = dict(os.environ)
+    env["VC_ROE_GREP_PATTERN"] = pattern
+    env["VC_ROE_GREP_FIXTURE"] = fixture
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'printf "%s\\n" "$VC_ROE_GREP_FIXTURE" '
+            '| grep -E -q -e "$VC_ROE_GREP_PATTERN"',
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    raise UnsupportedConstruct(
+        f"the gate's own engine could not decide it either (grep -E "
+        f"rc={proc.returncode})"
+    )
 
 
 def check_exclusion_is_path_scoped(deny: list[str]) -> list[str]:
@@ -235,11 +331,14 @@ def check_history_walk_pins_current_scanner() -> list[str]:
     fails: list[str] = []
     state_script = PLUGIN_ROOT / "bin" / "publish-audit-state.sh"
     if not state_script.is_file():
-        return ["history-walk-guard: bin/publish-audit-state.sh not found"]
+        raise Unrunnable("history-walk-guard: bin/publish-audit-state.sh not found")
 
     author = extract_scalar("PUBLIC_AUTHOR_EMAIL").strip()
     if not author:
-        return ["history-walk-guard: PUBLIC_AUTHOR_EMAIL is empty"]
+        raise Unrunnable(
+            "history-walk-guard: PUBLIC_AUTHOR_EMAIL is empty; the scaffold "
+            "bin/audit-patterns.sh sets it, so the tree is damaged"
+        )
 
     placeholder = "[" + "REDACTED" + "-" + "NAME" + "]"
     # Innocuous prose. It contains letters that the placeholder-as-character
@@ -323,7 +422,7 @@ def check_history_baseline_is_enumerated(deny: list[str]) -> list[str]:
     fails: list[str] = []
     state_script = PLUGIN_ROOT / "bin" / "publish-audit-state.sh"
     if not state_script.is_file():
-        return ["history-baseline-guard: bin/publish-audit-state.sh not found"]
+        raise Unrunnable("history-baseline-guard: bin/publish-audit-state.sh not found")
 
     author = extract_scalar("PUBLIC_AUTHOR_EMAIL").strip()
     pattern = deny[0]
@@ -417,6 +516,26 @@ def main(argv: list[str]) -> int:
     except subprocess.CalledProcessError as exc:
         print(f"test-audit-patterns: FAIL, could not source audit-patterns.sh: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # bash is a DEPENDENCY, not the subject. CalledProcessError covers only
+        # a bash that ran and exited non-zero; a bash that cannot be SPAWNED
+        # raises OSError, and it arrives in three shapes, all measured
+        # 2026-09-04: FileNotFoundError when nothing on PATH carries the name,
+        # PermissionError when a directory does, and plain OSError when a
+        # non-executable file does. All three mean the check did not run.
+        # This is not hypothetical on the Windows node: CHANGELOG.md:694 tells
+        # the operator to run this file directly as part of a regression sweep,
+        # and bash is not on that node's PowerShell PATH, so the documented
+        # command died on an uncaught traceback whose last line named no file
+        # at all. CalledProcessError is a SubprocessError and disjoint from
+        # OSError, so the handler above still owns "bash ran and the script is
+        # broken" and that stays exit 1.
+        print(
+            f"test-audit-patterns: NOT-RUNNABLE, could not run bash to source "
+            f"bin/audit-patterns.sh, so no pattern was examined: {exc}",
+            file=sys.stderr,
+        )
+        return 3
 
     if not deny:
         print("test-audit-patterns: FAIL, DENY_PATTERNS array empty", file=sys.stderr)
@@ -424,35 +543,115 @@ def main(argv: list[str]) -> int:
 
     own_source = Path(__file__).read_text(encoding="utf-8")
     fails: list[str] = []
+    skipped: list[str] = []
+    verified = 0
+    verified_deny: list[str] = []
+    total = len(deny) + len(warn)
 
+    # Every message below names a pattern by kind and 1-based index, never by
+    # its text. These arrays carry the gitignored operator overlay, so the old
+    # form printed the operator's private DENY entries verbatim to stderr,
+    # which the combined harness captures and quotes in its FAIL row detail
+    # (bin/publish-audit-combined.sh:204 takes the last line of the run).
+    # Kind plus index locates the entry in a file the operator owns, which is
+    # all a reader of that row needs.
     for kind, patterns in (("DENY", deny), ("WARN", warn)):
-        for pat in patterns:
+        for idx, pat in enumerate(patterns, start=1):
             try:
                 lit = sanitize_to_literal(pat)
+            except UnsupportedConstruct as exc:
+                skipped.append(f"{kind} pattern #{idx}: {exc}")
+                continue
             except ValueError as exc:
-                fails.append(f"{kind} {pat!r}: sanitize error: {exc}")
+                fails.append(f"{kind} pattern #{idx}: malformed pattern: {exc}")
                 continue
             fixture = build_fixture(lit)
             try:
                 m = re.search(pat, fixture)
             except re.error as exc:
-                fails.append(f"{kind} {pat!r}: invalid as Python regex: {exc}")
-                continue
+                # The gate runs these through `grep -E`, not through Python, so
+                # a construct Python rejects can be perfectly good ERE: a
+                # Windows path root is a plain literal to grep and an
+                # incomplete escape to Python. That makes Python's refusal a
+                # reason to ask the OTHER engine, not a reason to skip. Skipping
+                # it would leave this arm unable to fail, and the failure it
+                # would stop reporting is real: measured 2026-09-04 with GNU
+                # grep 3.0, `zsynth\U[^a]` is rejected by Python, accepted by
+                # grep -E, and does not match its own fixture. The re module's
+                # message quotes at most a metacharacter fragment and never the
+                # pattern; grep_e_matches keeps both off the command line.
+                try:
+                    m = grep_e_matches(pat, fixture)
+                except UnsupportedConstruct as gexc:
+                    skipped.append(
+                        f"{kind} pattern #{idx}: not parseable by Python re "
+                        f"({exc}), and {gexc}"
+                    )
+                    continue
             if not m:
-                fails.append(f"{kind} {pat!r}: did not match fixture {fixture!r}")
+                fails.append(f"{kind} pattern #{idx}: did not match its own fixture")
                 continue
             if lit in own_source:
                 fails.append(
-                    f"{kind} {pat!r}: literal {lit!r} appears in test source: "
-                    f"audit gate hole risk; refactor to keep literal out of source."
+                    f"{kind} pattern #{idx}: its sanitized literal appears in this "
+                    f"test's own source: audit gate hole risk; refactor to keep the "
+                    f"literal out of source."
                 )
                 continue
+            verified += 1
+            if kind == "DENY":
+                verified_deny.append(pat)
             if verbose:
+                # The one place a pattern is printed. --verbose is the operator
+                # asking to see their own patterns on their own terminal, and
+                # the combined harness never passes the flag
+                # (bin/publish-audit-combined.sh:198).
                 print(f"  OK  {kind:4} {pat!r}  fixture-literal={lit!r}")
 
-    fails.extend(check_exclusion_is_path_scoped(deny))
-    fails.extend(check_history_walk_pins_current_scanner())
-    fails.extend(check_history_baseline_is_enumerated(deny))
+    # TWO of the three structural guards build their fixture from deny[0]:
+    # check_exclusion_is_path_scoped and check_history_baseline_is_enumerated.
+    # check_history_walk_pins_current_scanner takes no argument and assembles
+    # its own placeholder, so it runs whatever the pattern set looks like.
+    #
+    # Hand the first two only the DENY entries this run actually verified.
+    # `verified == 0` was the wrong precondition for that: it neither implies
+    # nor is implied by "deny[0] can be sanitized". Measured 2026-09-04 with an
+    # overlay whose first DENY entry is an alternation, every other entry
+    # verifying: verified was 10, so the run fell through, and
+    # sanitize_to_literal(deny[0]) then raised UNCAUGHT inside the guard, rc=1,
+    # with no verdict line for the combined harness to quote. Selecting a
+    # verified entry guards the real precondition instead of a proxy for it.
+    notrunnable: list[str] = []
+    if verified_deny:
+        guard_plan = (
+            (check_exclusion_is_path_scoped, (verified_deny,)),
+            (check_history_walk_pins_current_scanner, ()),
+            (check_history_baseline_is_enumerated, (verified_deny,)),
+        )
+    else:
+        # No fixture is available, so the two that need one cannot run. The
+        # third still can, and it is kept rather than dropped: this path used
+        # to return before any guard ran, which silently removed coverage the
+        # pattern set has no bearing on.
+        notrunnable.append(
+            "no DENY pattern was fixture-verified, so the exclusion-scope and "
+            "history-baseline guards had no fixture to build and did not run"
+        )
+        guard_plan = ((check_history_walk_pins_current_scanner, ()),)
+
+    for guard, args in guard_plan:
+        try:
+            fails.extend(guard(*args))
+        except Unrunnable as exc:
+            notrunnable.append(str(exc))
+
+    # Skips and cannot-runs print on EVERY exit path below, before the verdict.
+    # A verdict with an unstated denominator reads as full coverage, and that
+    # is as wrong on a FAIL (which checks did not run?) as it is on a pass.
+    for line in skipped:
+        print(f"  SKIP  {line}", file=sys.stderr)
+    for line in notrunnable:
+        print(f"  NOT-RUN  {line}", file=sys.stderr)
 
     if fails:
         print("test-audit-patterns: FAIL", file=sys.stderr)
@@ -460,8 +659,21 @@ def main(argv: list[str]) -> int:
             print(f"  {line}", file=sys.stderr)
         return 1
 
+    # Nothing failed, but something did not run, so a zero here would be a
+    # vacuous pass. Reported after fails, because a defect that WAS found
+    # outranks a check that could not look.
+    if notrunnable:
+        print(
+            f"test-audit-patterns: NOT-RUNNABLE, {verified} of {total} patterns "
+            f"fixture-verified, {len(skipped)} skipped, and {len(notrunnable)} "
+            f"check(s) could not run",
+            file=sys.stderr,
+        )
+        return 3
+
     print(
-        f"test-audit-patterns: OK ({len(deny)} DENY + {len(warn)} WARN patterns verified, "
+        f"test-audit-patterns: OK ({verified} of {total} patterns fixture-verified "
+        f"({len(deny)} DENY + {len(warn)} WARN present), {len(skipped)} skipped, "
         f"self-audit clean, exclusion is path-scoped, history walk pins the "
         f"current scanner)"
     )

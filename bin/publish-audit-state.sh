@@ -15,6 +15,21 @@
 # Exits non-zero on any DENY hit. Optional --history walk treats every
 # historical leak the same way as a current-HEAD leak.
 #
+# Exit codes (v1.24.0 contract, methodology-content/T2.md):
+#   0  ran and clean
+#   1  ran and found a defect (DENY hits at public HEAD or in history)
+#   2  usage error: the CALLER is wrong (unknown argument)
+#   3  NOT-RUNNABLE: a dependency is missing or the environment is wrong,
+#      so NOTHING was audited (local audit scripts unreadable, the audit
+#      clone failed, the cloned tree carries no auditor, or the history
+#      walk could not enumerate its commits)
+#
+# The 3 exists because a cannot-run must never render as this script's PASS
+# or as its FOUND-A-DEFECT. bin/publish-audit-combined.sh maps rc=3 to a
+# NOTRUN row and every other non-zero to a FAIL row, and .githooks/pre-push
+# reports those two with different sentences. Both still block the push, so
+# adding 3 corrects the DIAGNOSIS and never opens the gate.
+#
 # --json-out FILE implies --history. Atomically writes a single-line JSON
 # object to FILE with the shape:
 #   {"ts": <epoch>, "head_sha": "<sha>", "deny_count": N, "warn_count": M,
@@ -29,13 +44,25 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PATTERNS_FILE="$REPO_ROOT/bin/audit-patterns.sh"
 PUBLISH_AUDIT="$REPO_ROOT/bin/publish-audit.sh"
 
+# Plain rather than colored because color()/hdr()/fail() are defined further
+# down, after the dependency guards below have already had to run. It writes
+# to stderr and exits immediately, so its line is the LAST one emitted: the
+# combined harness captures stdout and stderr together and takes the final
+# line as the row detail, so the reason has to travel on it.
+notrunnable() {
+  printf '[publish-audit-state] NOT-RUNNABLE: %s\n' "$*" >&2
+  exit 3
+}
+
+# These two are missing DEPENDENCIES, not a caller who typed the wrong flag,
+# so they are 3 and not 2. They used to exit 2, which the combined harness
+# records as FAIL and .githooks/pre-push then reports as "reported a leak /
+# regression" about a tree that nobody scanned.
 if [ ! -r "$PATTERNS_FILE" ]; then
-  printf '[publish-audit-state] FATAL: cannot source %s\n' "$PATTERNS_FILE" >&2
-  exit 2
+  notrunnable "cannot source $PATTERNS_FILE; nothing was audited"
 fi
 if [ ! -r "$PUBLISH_AUDIT" ]; then
-  printf '[publish-audit-state] FATAL: cannot find %s\n' "$PUBLISH_AUDIT" >&2
-  exit 2
+  notrunnable "cannot find $PUBLISH_AUDIT; nothing was audited"
 fi
 
 # Resolve the public remote URL. Default to the canonical GitHub URL if
@@ -103,12 +130,32 @@ color() {
 hdr()  { color '36' "[publish-audit-state] "; printf '%s\n' "$*"; }
 fail() { color '31' "[publish-audit-state] "; printf '%s\n' "$*"; exit 1; }
 
+# F065 (measured 2026-09-04): the clone's rc was discarded. This script runs
+# under `set -uo pipefail` with no -e, so an unreachable remote, a proxy, an
+# offline laptop or a revoked credential left $TMPDIR/repo absent and
+# execution simply fell through to the cloned-auditor readability test below,
+# whose fail() exits 1. Under the exit contract 1 is "ran and found a
+# defect", so a cannot-run rendered as a finding ABOUT THE PUBLIC REPO'S
+# CONTENT when nothing had been cloned and nothing had been scanned.
+#
+# Firing rather than latent: this clone's own origin does not resolve, and
+# .githooks/pre-push runs the harness that invokes this script on every push.
+#
+# The clone's stderr is kept and replayed, because it carries the only
+# statement of the actual cause and the harness discards it in hook mode.
+CLONE_ERR="$TMPDIR/clone.err"
+clone_rc=0
 if [ "$WALK_HISTORY" -eq 1 ]; then
   hdr "cloning $REMOTE_URL with full history into ephemeral tempdir..."
-  git clone --quiet "$REMOTE_URL" "$TMPDIR/repo"
+  git clone --quiet "$REMOTE_URL" "$TMPDIR/repo" 2>"$CLONE_ERR" || clone_rc=$?
 else
   hdr "cloning $REMOTE_URL (shallow) into ephemeral tempdir..."
-  git clone --quiet --depth=1 "$REMOTE_URL" "$TMPDIR/repo"
+  git clone --quiet --depth=1 "$REMOTE_URL" "$TMPDIR/repo" 2>"$CLONE_ERR" || clone_rc=$?
+fi
+if [ "$clone_rc" -ne 0 ] || [ ! -d "$TMPDIR/repo/.git" ]; then
+  [ -s "$CLONE_ERR" ] && sed 's/^/    /' "$CLONE_ERR" >&2
+  clone_why=$(grep -v '^[[:space:]]*$' "$CLONE_ERR" 2>/dev/null | tail -1 || true)
+  notrunnable "git clone of $REMOTE_URL exited $clone_rc; the public state was never fetched, so nothing was audited: ${clone_why:-no diagnostic on stderr}"
 fi
 
 # Capture public HEAD sha BEFORE any checkout walks; the --history loop
@@ -140,7 +187,12 @@ fi
 CLONED_AUDIT="$TMPDIR/repo/bin/publish-audit.sh"
 CLONED_PATTERNS="$TMPDIR/repo/bin/audit-patterns.sh"
 if [ ! -r "$CLONED_AUDIT" ] || [ ! -r "$CLONED_PATTERNS" ]; then
-  fail "cloned repo at $REMOTE_URL HEAD does not contain bin/publish-audit.sh + bin/audit-patterns.sh; cannot self-audit"
+  # Reached only when the clone SUCCEEDED, so this is a true statement about
+  # the fetched tree. It is still a cannot-run and not a DENY hit: the
+  # message has always said "cannot self-audit", and sharing exit 1 with the
+  # real-leak path at the foot of this file is the collision T2 says to close
+  # by adding 3 rather than by renumbering what already discriminates.
+  notrunnable "cloned repo at $REMOTE_URL HEAD does not contain bin/publish-audit.sh + bin/audit-patterns.sh; cannot self-audit"
 fi
 
 # Pin the cloned tempdir's user.email to the canonical public author so the
@@ -265,7 +317,39 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
     '
   }
 
-  hdr "walking history (--history)..."
+  # F005 (measured 2026-09-04): resolve the ref to walk instead of naming it.
+  #
+  # This read `git log --format='%H' main`. A clone carries only the remote's
+  # default branch, so on any repo whose default is not literally `main` that
+  # command fails, the process substitution feeding the loop yields nothing,
+  # the loop body never runs, and the walk prints "history walk clean" at exit
+  # 0 having examined zero commits. Measured on a fixture whose default branch
+  # is `master`, carrying a real private-hostname DENY hit in an earlier commit
+  # and scrubbed at HEAD: `fatal: ambiguous argument 'main'` on stderr, then
+  # "public repo state is clean" at rc=0. The same fixture built with `-b main`
+  # reported the leak at rc=1, so the branch NAME was the only variable. The
+  # stderr line is invisible in hook mode, where the combined harness captures
+  # it and prints it only under --verbose.
+  #
+  # Two changes, and the second is the one that does not depend on resolving
+  # the ref correctly: enumerate up front so the rc of `git log` is visible at
+  # all, and treat an empty enumeration as a hard stop. A walk that examined
+  # nothing is not a walk that found nothing.
+  WALK_REF=$( ( cd "$TMPDIR/repo" && git symbolic-ref --quiet --short HEAD ) 2>/dev/null || true )
+  [ -n "$WALK_REF" ] || WALK_REF='HEAD'
+  COMMIT_LIST="$TMPDIR/history-commits.txt"
+  COMMIT_ERR="$TMPDIR/history-commits.err"
+  if ! ( cd "$TMPDIR/repo" && git log --format='%H' "$WALK_REF" ) >"$COMMIT_LIST" 2>"$COMMIT_ERR"; then
+    hdr "git log failed on ref '$WALK_REF':"
+    sed 's/^/    /' "$COMMIT_ERR"
+    notrunnable "history walk could not enumerate commits on '$WALK_REF'; refusing to report a clean walk"
+  fi
+  commit_total=$(wc -l < "$COMMIT_LIST" | tr -d ' ')
+  if [ "${commit_total:-0}" -eq 0 ]; then
+    notrunnable "history walk enumerated 0 commit(s) on '$WALK_REF'; refusing to certify a walk over an empty set"
+  fi
+
+  hdr "walking history (--history): $commit_total commit(s) on $WALK_REF..."
   hist_accepted=0
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
@@ -306,7 +390,7 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
       hdr "  HISTORICAL LEAK at $commit ($commit_deny deny hit(s) not covered by the baseline)"
       hist_leaks=$((hist_leaks + 1))
     fi
-  done < <(cd "$TMPDIR/repo" && git log --format='%H' main)
+  done < "$COMMIT_LIST"
 
   if [ "$hist_accepted" -gt 0 ]; then
     hdr "$hist_accepted commit(s) carried only baselined, previously accepted findings"
@@ -315,7 +399,7 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
     hdr "$hist_leaks historical leak(s) found"
     state_rc=1
   else
-    hdr "history walk clean: no historical leaks"
+    hdr "history walk clean: no historical leaks across $commit_total commit(s) on $WALK_REF"
   fi
 fi
 

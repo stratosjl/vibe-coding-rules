@@ -18,9 +18,23 @@ plus the real side effect on `core.hooksPath`:
     Case B  same repo but hooksPath already '.githooks'     -> 'armed', no banner
     Case C  git repo WITHOUT the two marker files            -> 'n/a' (not this repo)
     Case D  cwd is not a git repo                            -> 'n/a', session intact
+    Case E  this runner re-invoked with git OFF PATH         -> exits 3, not 1
 
 Cross-platform: pure stdlib, sys.executable (never the broken `python3` alias
 on Windows per the user-global CLAUDE.md rule). Requires git on PATH.
+
+EXIT CONTRACT (F-EXIT-01, v1.24.0). Codes that already discriminate are not
+renumbered; 3 is added here because a collision existed:
+
+    0  ran, and every case passed
+    1  ran, and a case FAILED: the guard regressed
+    3  NOT-RUNNABLE: git is not on PATH, so nothing was verified
+
+Every case drives real git repos, so with git absent this runner used to die
+inside the first `make_repo` with rc=1, which is the same code the summary
+returns for "a guard regressed". Case E is the negative arm required by
+methodology-content/T2.md item 3: it REMOVES the declared dependency rather
+than corrupting an input, and it returned 1 before the preflight below existed.
 
 Usage:
     python test-pre-push-gate-guard.py
@@ -36,8 +50,21 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-PLUGIN_ROOT = Path(__file__).resolve().parent
+SELF = Path(__file__).resolve()
+PLUGIN_ROOT = SELF.parent
 SESSION_START = PLUGIN_ROOT / "hooks" / "session-start.py"
+
+EXIT_OK = 0
+EXIT_DEFECT = 1
+EXIT_NOT_RUNNABLE = 3
+
+# Case E sets this in the child it spawns so the child cannot re-enter Case E
+# and spawn a child of its own. The preflight returns 3 long before Case E is
+# reached, so this is belt and braces against a future reordering.
+SELFTEST_ENV = "VCROE_GATE_GUARD_SELFTEST"
+
+NOT_RUNNABLE_BANNER = "NOT-RUNNABLE: git is not on PATH; this runner drives real git repos."
+NOT_RUNNABLE_TAIL = "NOT-RUNNABLE: no case was verified, so this is not a pass."
 
 PASS = 0
 FAIL = 0
@@ -55,11 +82,38 @@ def check(cond: bool, label: str) -> None:
         print(f"  FAIL: {label}")
 
 
+def git_available() -> bool:
+    """Probe the declared dependency by RUNNING it, not by resolving a name.
+
+    which() alone is unsafe: on Windows a name can resolve to an app-execution
+    alias stub that prints nothing and fails on exec, which is why
+    bin/publish-audit-combined.sh probes its interpreter with --version rather
+    than with command -v. Same discipline here.
+    """
+    if shutil.which("git") is None:
+        return False
+    try:
+        res = subprocess.run(["git", "--version"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0 and res.stdout.strip().lower().startswith("git version")
+
+
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, timeout=10,
-    )
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        # The preflight passed and the exec still failed, or git went away
+        # mid-run. A missing dependency is not a failed assertion: leave by
+        # the NOT-RUNNABLE door rather than letting a traceback surface as
+        # rc=1, which is this runner's "a guard regressed" code. main()'s
+        # `finally` still removes the tempdir on the way out.
+        print(NOT_RUNNABLE_BANNER, file=sys.stderr)
+        print(NOT_RUNNABLE_TAIL, file=sys.stderr)
+        raise SystemExit(EXIT_NOT_RUNNABLE)
 
 
 def make_repo(tmp: Path, name: str, with_markers: bool, is_git: bool = True) -> Path:
@@ -107,6 +161,15 @@ def run_session_start(home: Path, cwd: Path) -> tuple[int, str]:
 
 
 def main() -> int:
+    # Preflight the one dependency the docstring declares, BEFORE any repo is
+    # made. Without this the first `git init` raised FileNotFoundError and the
+    # runner exited 1, so "git is missing" and "the guard regressed" reached
+    # the caller as the same code.
+    if not git_available():
+        print(NOT_RUNNABLE_BANNER, file=sys.stderr)
+        print(NOT_RUNNABLE_TAIL, file=sys.stderr)
+        return EXIT_NOT_RUNNABLE
+
     tmp = Path(tempfile.mkdtemp(prefix="vcroe-gate-test-"))
     try:
         home = make_home(tmp, "home")
@@ -145,6 +208,28 @@ def main() -> int:
         rc, ctx = run_session_start(home, repo)
         check(rc == 0, "D hook exits 0 (fail-soft)")
         check("- pre_push_gate: n/a" in ctx, "D trace token n/a")
+
+        # Case E: the declared dependency REMOVED, per T2.md item 3. Corrupting
+        # an input would only exercise the arm that already works, so this arm
+        # re-invokes the runner with PATH pointing at an empty directory and
+        # asserts the cannot-run code rather than the found-a-defect code.
+        # Before the preflight above existed this arm returned 1.
+        if os.environ.get(SELFTEST_ENV) != "1":
+            print("Case E: git removed from PATH -> NOT-RUNNABLE, not a defect")
+            empty = tmp / "empty-path"
+            empty.mkdir(parents=True, exist_ok=True)
+            env = os.environ.copy()
+            env["PATH"] = str(empty)
+            env[SELFTEST_ENV] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(SELF)],
+                capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+            )
+            check(proc.returncode == EXIT_NOT_RUNNABLE,
+                  f"E exits {EXIT_NOT_RUNNABLE} NOT-RUNNABLE, not {EXIT_DEFECT} "
+                  f"(got {proc.returncode})")
+            check(NOT_RUNNABLE_BANNER in proc.stderr,
+                  "E stderr names the missing dependency")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -154,8 +239,8 @@ def main() -> int:
         print("FAILURES:")
         for f in FAILURES:
             print(f"  - {f}")
-        return 1
-    return 0
+        return EXIT_DEFECT
+    return EXIT_OK
 
 
 if __name__ == "__main__":

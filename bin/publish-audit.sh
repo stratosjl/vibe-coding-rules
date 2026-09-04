@@ -17,15 +17,50 @@
 # Usage:
 #   bash bin/publish-audit.sh                  # scan from repo root
 #   bash bin/publish-audit.sh --strict          # exit non-zero on any hit
+#
+# Exit codes (v1.24.0 contract):
+#   0  ran and clean
+#   1  ran and found a defect (deny hits, or warn hits under --strict)
+#   2  usage error (unknown argument, or the pattern file is unreadable)
+#   3  NOT-RUNNABLE (not inside a git work tree, or git grep could not run)
 
 set -euo pipefail
 
+# The former single equality test discarded every argument that was not
+# exactly `--strict`, so a mistyped flag ran the LOOSER scan and reported
+# a green. Six wrong spellings were measured exiting 0 with no diagnostic.
+# The loop below matches bin/publish-audit-state.sh:64-87 and
+# bin/publish-audit-combined.sh:80-104, which already reject unknown args.
 STRICT=0
-if [ "${1:-}" = "--strict" ]; then
-  STRICT=1
-fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    *)
+      printf '[publish-audit] FATAL: unknown argument: %s\n' "$1" >&2
+      printf '[publish-audit] usage: bash bin/publish-audit.sh [--strict]\n' >&2
+      exit 2
+      ;;
+  esac
+done
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+notrunnable() {
+  printf '[publish-audit] NOT-RUNNABLE: %s\n' "$*" >&2
+  exit 3
+}
+
+# The former `|| pwd` fallback made the not-a-work-tree case silent instead
+# of fatal: an unpacked ZIP or a `git archive` export still carries
+# bin/audit-patterns.sh, so the FATAL check below passed, git grep scanned
+# nothing, and the gate printed "no deny-pattern hits. Safe to push." at
+# exit 0 with a leaking file on disk. A gate whose CANNOT-RUN is rendered
+# as its PASS is the one property a gate must not have.
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  notrunnable "not inside a git work tree, so git grep cannot scan tracked content"
+fi
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 color() {
@@ -47,6 +82,22 @@ fi
 # shellcheck disable=SC1090
 . "$PATTERNS_FILE"
 
+# Report the denominator. A clean run against the public scaffold alone and
+# a clean run with the gitignored operator overlay loaded used to be
+# byte-identical, so no text, no count and no exit code distinguished
+# "ran fully armed" from "ran the public subset". The overlay path is
+# derived from PATTERNS_FILE so it stays in lockstep with the dirname
+# resolution inside bin/audit-patterns.sh, and the wording mirrors
+# bin/publish-audit-state.sh:129-133 so the two consumers agree.
+# Absence is NOT an error: it is normal for a fresh public clone and for
+# unprivileged CI, which is why this reports rather than exits.
+OVERLAY_FILE="${PATTERNS_FILE%.sh}.local.sh"
+if [ -r "$OVERLAY_FILE" ]; then
+  overlay_state='operator-local overlay present, full DENY coverage active'
+else
+  overlay_state='no operator-local overlay present, public scaffold patterns only'
+fi
+
 deny_hits=0
 warn_hits=0
 
@@ -59,16 +110,37 @@ warn_hits=0
 # CHANGELOG.md survived every push for that reason while the gate printed
 # "Safe to push". Splitting on the first colon is safe because `git grep -n`
 # always emits the path first and repo paths here contain no colon.
+#
+# The status git already returns is load-bearing and used to be thrown away.
+# Under `set -o pipefail` the old form returned 0 on match, 1 on a legitimate
+# no-match and 127 when git could not run, three distinct codes, and the
+# callers' `|| true` collapsed all three. A git that could not run therefore
+# rendered as a clean scan. Keep 0 and 1 as the only acceptable outcomes and
+# report anything else as NOT-RUNNABLE; git's own stderr is no longer sent to
+# /dev/null, so the reason reaches the operator.
 scan_pattern() {
-  git grep -nE "$1" 2>/dev/null | while IFS= read -r line; do
+  local raw rc line path
+  rc=0
+  raw=$(git grep -nE "$1") || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    printf '[publish-audit] git grep exited %s on pattern: %s\n' "$rc" "$1" >&2
+    return 3
+  fi
+  [ -n "$raw" ] || return 0
+  printf '%s\n' "$raw" | while IFS= read -r line; do
     path=${line%%:*}
     printf '%s' "$path" | grep -qE "$SCAN_EXCLUDE" || printf '%s\n' "$line"
   done
+  return 0
 }
 
 hdr "scanning for hard-deny patterns"
 for pat in "${DENY_PATTERNS[@]}"; do
-  matches=$(scan_pattern "$pat" || true)
+  scan_rc=0
+  matches=$(scan_pattern "$pat") || scan_rc=$?
+  if [ "$scan_rc" -ne 0 ]; then
+    notrunnable "deny scan could not run for pattern: $pat"
+  fi
   if [ -n "$matches" ]; then
     hit "DENY pattern '$pat':"
     echo "$matches" | sed 's/^/    /'
@@ -78,7 +150,11 @@ done
 
 hdr "scanning for warning patterns"
 for pat in "${WARN_PATTERNS[@]}"; do
-  matches=$(scan_pattern "$pat" || true)
+  scan_rc=0
+  matches=$(scan_pattern "$pat") || scan_rc=$?
+  if [ "$scan_rc" -ne 0 ]; then
+    notrunnable "warn scan could not run for pattern: $pat"
+  fi
   if [ -n "$matches" ]; then
     hit "WARN pattern '$pat':"
     echo "$matches" | sed 's/^/    /'
@@ -103,6 +179,8 @@ fi
 
 echo ""
 hdr "scan summary"
+hdr "  deny patterns in force: ${#DENY_PATTERNS[@]}  ($overlay_state)"
+hdr "  warn patterns in force: ${#WARN_PATTERNS[@]}"
 hdr "  deny hits:  $deny_hits  (must be zero before push)"
 hdr "  warn hits:  $warn_hits  (eyeball, then continue)"
 

@@ -117,6 +117,15 @@ INFORMATIONAL_STATUS = {"OK": "OK", "OVERDUE": "DUE", "OVERDUE-2X": "DUE-2X"}
 
 SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m\]")
 
+# Tail window for the agent-loop transcript walk. The walk halts at the first
+# true user-prompt boundary, so it only ever needs the current agent loop:
+# measured against a real 14.0 MB / 1595-line transcript it halted after 101
+# lines, while readlines() over the whole file cost 76.9 ms of a 77.5 ms hook
+# run, and PostToolUse pays that on every tool call at T2+. Reading the last
+# 512 KB instead covers that loop with room to spare; a loop bigger than the
+# window escalates to the whole file, so the answer is unchanged either way.
+TRANSCRIPT_TAIL_BYTES = 512 * 1024
+
 # v1.10.0 (F-63-01 Layer 2): chat-claim writer-promotion. PostToolUse fires
 # after every tool call; on a watched-path edit or a git-mutation Bash, we
 # promote the chat-claim from mode=reader to mode=writer (or refresh the
@@ -131,6 +140,34 @@ WRITER_LEASE_FILENAME = "writer-lease.jsonl"
 MODE_READER = "reader"
 MODE_WRITER = "writer"
 WATCHED_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+# Shell tools whose command text is scanned for git mutations. PowerShell is
+# the primary shell on the Windows fleet node: this box's own hook log carries
+# 874 PowerShell tool calls against 856 Bash over 4193 PostToolUse entries, so
+# a Bash-only gate left roughly half that node's git mutations out of the
+# writer-lease ledger, which is the audit surface a T4 close summarises.
+# GIT_MUTATION_RE already matches the PowerShell command text unchanged
+# (measured: `git push gitea main` matches under both tool names once the gate
+# admits it); only the gate was narrow.
+GIT_SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
+
+# Git probe budget. hooks.json declares a 5 s PostToolUse timeout and
+# is_in_git_worktree spawns two sequential git calls, so a timeout of 5 s on
+# each let the pair alone spend 10 s inside a 5 s budget. The harness then
+# kills the hook mid-flight and the writer-lease row for the mutation that
+# triggered the probe is never appended, which loses exactly the mutations the
+# ledger exists to record. Budget the pair instead of each call. Measured
+# healthy cost of the pair on the Windows node: 71 to 92 ms.
+GIT_PROBE_BUDGET_SEC = 2.0
+
+# Claim-write retry budget. write_claim_file's os.replace cannot rename onto
+# a path a concurrent reader holds open on Windows, so a correct write fails
+# with PermissionError. 5 attempts with a 15 ms linear backoff spend at most
+# 150 ms of sleep, which sits inside the 5 s PostToolUse budget alongside the
+# 2.2 s worst case of the git probe above. A write that still fails after
+# them is reported to the caller rather than assumed.
+CLAIM_REPLACE_ATTEMPTS = 5
+CLAIM_REPLACE_BACKOFF_SEC = 0.015
 
 # Watched-path regex: absolute-path substring matches. Matches the
 # regulator-presentable surfaces per open-issues.md § F-63-01 Layer 2 scope
@@ -257,24 +294,81 @@ def writer_lease_path_for(cwd_raw: Optional[str]) -> Optional[Path]:
 
 
 def read_claim_file(path: Path) -> Optional[dict[str, Any]]:
+    """Read the claim. Returns None if it is absent or unreadable.
+
+    The single retry exists for the OTHER two writers of this file, stop.py
+    and session-start.py, which still open(path, "w") and so leave a torn
+    file visible mid-write. Retrying once re-reads after that window and
+    usually succeeds. Measured against a truncating writer over 4 s: without
+    the retry 1468 of 3839 reads came back None (38.24%), with it 763 of
+    3575 (21.34%).
+
+    The mechanism is a torn READ, not a failed open. Reader exceptions were
+    0 in both arms of that measurement: open() succeeds and json.load raises
+    on the half-written bytes. The Windows sharing violation that a rename
+    over an open file provokes lands on the WRITER instead, which is why
+    write_claim_file has its own retry. It is not a retry loop on a
+    genuinely missing or corrupt claim, because is_file() already returned
+    True and one extra read settles the window.
+    """
     if not path.is_file():
         return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    for _ in range(2):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            continue
+    return None
 
 
 def write_claim_file(path: Path, claim: dict[str, Any]) -> bool:
+    """Write the claim atomically: temp file beside it, then os.replace.
+
+    open(path, "w") truncates first and writes second, so a concurrent reader
+    can observe an empty or half-written file. Measured on the Windows node
+    with one thread rewriting the claim while another read it: 515 of 6993
+    reads (7.4%) came back None, with zero exceptions. read_claim_file maps
+    that None onto "no claim on disk", which sends handle_writer_promotion
+    down the no-claim-skip path, so a torn read looked exactly like an absent
+    claim rather than like an error. os.replace is atomic on POSIX and on
+    Windows for a same-directory rename, which closes that window.
+
+    It buys that with a failure mode the truncating write did not have:
+    Windows refuses a rename onto a path any process currently holds open,
+    so a concurrent reader makes os.replace raise PermissionError on a write
+    that is otherwise correct. Measured with one read handle held, the
+    truncating write returned True and this one returned False. Hence the
+    bounded retry, which rides out a reader's open window (the other hooks
+    hold the claim open for microseconds), and hence the caller is obliged
+    to read the returned bool rather than assume the write landed. POSIX
+    never takes the retry branch.
+    """
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        # pid in the name so two hook processes cannot collide on the temp.
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(claim, f)
             f.write("\n")
+        for attempt in range(CLAIM_REPLACE_ATTEMPTS - 1):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:
+                time.sleep(CLAIM_REPLACE_BACKOFF_SEC * (attempt + 1))
+        # Final attempt: a failure here falls through to the except below,
+        # which cleans the temp up and reports False to the caller.
+        os.replace(tmp, path)
         return True
     except Exception:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return False
 
 
@@ -396,15 +490,24 @@ def is_in_git_worktree(cwd_raw: Optional[str]) -> bool:
     if not cwd_raw:
         return False
     try:
+        # The pair shares GIT_PROBE_BUDGET_SEC; see the constant for why a
+        # per-call timeout could not be honoured inside the hook's own budget.
+        # A blown budget raises TimeoutExpired into the except below and
+        # returns False, the same answer a git failure already gave, so the
+        # caller proceeds with promotion and the mutation still reaches the
+        # ledger. That is the safe direction: a missed worktree bypass costs
+        # one spurious claim write, a killed hook costs the audit row.
+        deadline = time.monotonic() + GIT_PROBE_BUDGET_SEC
         common = subprocess.run(
             ["git", "-C", str(cwd_raw), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=GIT_PROBE_BUDGET_SEC,
         )
         if common.returncode != 0:
             return False
         gitdir = subprocess.run(
             ["git", "-C", str(cwd_raw), "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True,
+            timeout=max(0.2, deadline - time.monotonic()),
         )
         if gitdir.returncode != 0:
             return False
@@ -442,7 +545,7 @@ def detect_write(tool_name: str, tool_input: Any) -> Optional[tuple[str, str]]:
         if WATCHED_PATH_RE.search(file_path.replace("\\", "/")):
             return ("watched-path", file_path)
         return None
-    if tool_name == "Bash":
+    if tool_name in GIT_SHELL_TOOLS:
         if not isinstance(tool_input, dict):
             return None
         command = str(tool_input.get("command") or "")
@@ -711,6 +814,48 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
 
     action, info = evaluate_writer_promotion(claim, session_id, our_host, our_boot_id)
 
+    # Compare-and-swap on the promote path. The claim was read above and the
+    # write below replaces whatever is on disk now, with no re-check in
+    # between: feeding one on-disk mode=reader claim to
+    # evaluate_writer_promotion as SESSION-A and again as SESSION-B returned
+    # action="promote" for both, so two sessions could each write themselves
+    # in as writer and neither would ever reach the conflict branch. Re-read
+    # immediately before dispatching and, if the claim moved, decide against
+    # what is actually there; a lease taken by another live session in the
+    # meantime then evaluates to "conflict" and the existing branch below
+    # emits the banner and the ledger row.
+    #
+    # This NARROWS the window to the re-read, it does not close it. Closing it
+    # needs a lock or a rev field honoured by every hook that writes the claim
+    # (session-start.py and stop.py write it the same way), which is a
+    # cross-file change.
+    #
+    # A re-read that comes back None means the claim was released (a
+    # concurrent SessionEnd) or could not be read. Keeping the stale claim
+    # and promoting anyway recreates a claim file that no longer exists,
+    # which is precisely the cold-start the no-claim branch above refuses.
+    # Take that same documented path instead, so the mutation still reaches
+    # the ledger and no claim is invented.
+    if action == "promote":
+        current = read_claim_file(cp)
+        if current is None:
+            append_writer_lease_row(lp, {
+                "ts": int(time.time()),
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "target_kind": target_kind,
+                "target": target,
+                "action": "no-claim-skip",
+                "reason": ("claim-released-during-promote" if not cp.is_file()
+                           else "claim-unreadable-during-promote"),
+                "routine_version": ROUTINE_VERSION,
+            })
+            return ""
+        if current != claim:
+            claim = current
+            action, info = evaluate_writer_promotion(
+                claim, session_id, our_host, our_boot_id)
+
     now = int(time.time())
 
     if action == "legacy-skip":
@@ -756,10 +901,18 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
 
     # promote / refresh: write claim + ledger acquire/refresh row.
     our_pid_starttime = None  # v1.20.2 (OBS-S67-01), see above
-    promote_or_refresh_writer(
+    claim_written = promote_or_refresh_writer(
         cp, claim, action, session_id, our_host, our_boot_id,
         our_pid, our_pid_starttime, now,
     )
+    # The ledger asserts what actually reached disk. Discarding this bool let
+    # a failed claim write still append action="promote", so the file the
+    # docstring above calls the T4-close compliance trail claimed a writer
+    # lease that no session ever held. Reproduced by holding one read handle
+    # on the claim: write_claim_file returned False, the claim stayed
+    # mode=reader, and the ledger row still read "promote". A distinct action
+    # value is what a consumer can filter on; "promote"/"refresh" therefore
+    # keep meaning "this happened".
     append_writer_lease_row(lp, {
         "ts": now,
         "session_id": session_id,
@@ -768,10 +921,22 @@ def handle_writer_promotion(session_id: str, event: dict[str, Any]) -> str:
         "tool_name": tool_name,
         "target_kind": target_kind,
         "target": target,
-        "action": action,  # "promote" or "refresh"
+        "action": action if claim_written else f"{action}-failed",
+        "claim_write_ok": claim_written,
         "reason": info.get("reason", ""),
         "routine_version": ROUTINE_VERSION,
     })
+    if not claim_written:
+        append_log({
+            "ts": time.time(),
+            "hook": "post-tool-use",
+            "event": "claim-write-failed",
+            "session_id": session_id,
+            "attempted_action": action,
+            "tool_name": tool_name,
+            "target_kind": target_kind,
+            "routine_version": ROUTINE_VERSION,
+        })
     return ""
 
 
@@ -842,6 +1007,40 @@ def extract_assistant_text(turn: Any) -> str:
     return ""
 
 
+def read_tail_lines(p: Path, limit: int) -> tuple[list[str], bool]:
+    """Return (lines, covers_whole_file) for roughly the last `limit` bytes.
+
+    limit <= 0 reads the whole file. Read in binary and decode with
+    errors="replace" because a byte offset lands wherever it lands, possibly
+    mid-character. For the same reason the first line of a windowed read is
+    dropped: the seek almost certainly cut it in half. Dropping it cannot
+    change the caller's answer, because a boundary at or before that line
+    leaves the walk un-halted and the caller then re-reads the whole file.
+
+    Split on the newline byte alone, NOT with str.splitlines(). splitlines()
+    also breaks on U+0085, U+2028 and U+2029, which readlines() does not, and
+    JSONL stores those raw inside message text: measured across all 2125
+    transcripts under ~/.claude/projects (874,835,076 bytes) there are 43
+    U+0085, 4 U+2028 and 4 U+2029, against a positive control of 228,534
+    newlines. Splitting there cuts one JSON object into two fragments, both
+    fail json.loads, both are skipped, and that assistant turn's text is
+    lost along with any heartbeat sentinel in it, which is exactly the
+    OBS-46-02 false-OVERDUE class this walk exists to prevent. A trailing
+    "" from a file ending in a newline, and a "\\r" left on a CRLF line, are
+    both absorbed by the caller's strip()/empty-line skip.
+    """
+    size = p.stat().st_size
+    start = max(0, size - limit) if limit > 0 else 0
+    with open(p, "rb") as f:
+        if start:
+            f.seek(start)
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    if start > 0 and lines:
+        lines = lines[1:]
+    return (lines, start == 0)
+
+
 def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
     """Collect assistant text from the current agent loop.
 
@@ -875,59 +1074,71 @@ def agent_loop_assistant_text(transcript_path: str) -> Optional[str]:
     p = Path(transcript_path)
     if not p.is_file():
         return None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except Exception:
-        return None
 
+    # Try the tail window first, then the whole file. The escalation is what
+    # makes the window safe: if the walk reaches the top of the window without
+    # finding a user-prompt boundary, the boundary is older than the window and
+    # the second pass reads everything, so the result never depends on where
+    # the window happened to cut.
     parts: list[str] = []
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
+    for limit in (TRANSCRIPT_TAIL_BYTES, 0):
         try:
-            turn = json.loads(line)
+            lines, covers_whole_file = read_tail_lines(p, limit)
         except Exception:
-            continue
+            return None
 
-        role = turn.get("role") or turn.get("type") or ""
-        if not role:
-            inner = turn.get("message")
-            if isinstance(inner, dict):
-                role = inner.get("role") or inner.get("type") or ""
-
-        if role == "assistant":
-            t = extract_assistant_text(turn)
-            if t:
-                parts.append(t)
-            continue
-
-        if role == "user":
-            # Distinguish tool_result-bearing user lines (internal to the
-            # agent loop, skip) from real user-prompt lines (boundary,
-            # halt). A user line whose content list contains any
-            # tool_result block is treated as internal.
-            content = turn.get("content")
-            if content is None:
-                msg = turn.get("message")
-                if isinstance(msg, dict):
-                    content = msg.get("content")
-            if isinstance(content, list) and any(
-                isinstance(c, dict) and c.get("type") == "tool_result"
-                for c in content
-            ):
+        parts = []
+        halted = False
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
                 continue
-            # Real user-prompt boundary: halt the walk.
-            break
+            try:
+                turn = json.loads(line)
+            except Exception:
+                continue
 
-        # v1.1.2 fix for OBS-46-02: any other role/type (synthetic Claude
-        # Code metadata like attachment / last-prompt / ai-title /
-        # permission-mode / file-history-snapshot, or any future unknown
-        # synthetic line type) is transparent and skipped past. Do NOT
-        # halt the walk on these. The previous "if role: break" rule
-        # halted on synthetic metadata, missing pre-tool sentinels.
-        continue
+            role = turn.get("role") or turn.get("type") or ""
+            if not role:
+                inner = turn.get("message")
+                if isinstance(inner, dict):
+                    role = inner.get("role") or inner.get("type") or ""
+
+            if role == "assistant":
+                t = extract_assistant_text(turn)
+                if t:
+                    parts.append(t)
+                continue
+
+            if role == "user":
+                # Distinguish tool_result-bearing user lines (internal to the
+                # agent loop, skip) from real user-prompt lines (boundary,
+                # halt). A user line whose content list contains any
+                # tool_result block is treated as internal.
+                content = turn.get("content")
+                if content is None:
+                    msg = turn.get("message")
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                if isinstance(content, list) and any(
+                    isinstance(c, dict) and c.get("type") == "tool_result"
+                    for c in content
+                ):
+                    continue
+                # Real user-prompt boundary: halt the walk.
+                halted = True
+                break
+
+            # v1.1.2 fix for OBS-46-02: any other role/type (synthetic Claude
+            # Code metadata like attachment / last-prompt / ai-title /
+            # permission-mode / file-history-snapshot, or any future unknown
+            # synthetic line type) is transparent and skipped past. Do NOT
+            # halt the walk on these. The previous "if role: break" rule
+            # halted on synthetic metadata, missing pre-tool sentinels.
+            continue
+
+        if halted or covers_whole_file:
+            break
 
     if not parts:
         return None
@@ -1010,6 +1221,17 @@ def main() -> int:
     # LAST_HEARTBEAT before the cadence check. Stop fires only at loop-end,
     # so intermediate-turn sentinels otherwise stay invisible until then,
     # producing repeated false OVERDUE alarms.
+    #
+    # This deliberately stays ABOVE the cadence gate. Moving it below looks
+    # free, because the block's stated job is suppressing an OVERDUE and
+    # there is no OVERDUE to suppress while the heartbeat is fresh. It is
+    # not: the advance also writes LAST_HEARTBEAT, which user-prompt-submit
+    # and stop read out of the same anchor, so skipping it under cadence
+    # changes what the other two hooks report. Measured by moving it and
+    # re-running test-heartbeat.py, which went from 0 to 3 misses, all three
+    # asserting the advance at T+16m against a 30 min cadence. The cost that
+    # motivated the move is real and is fixed in agent_loop_assistant_text
+    # instead, by reading the tail rather than the whole transcript.
     transcript_path = event.get("transcript_path") or ""
     if transcript_path:
         text = agent_loop_assistant_text(transcript_path)

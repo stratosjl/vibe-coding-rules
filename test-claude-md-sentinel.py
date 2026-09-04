@@ -85,6 +85,23 @@ def assert_contains(label: str, haystack: str, needle: str) -> bool:
     return False
 
 
+def assert_action(label: str, stdout: str, action: str) -> bool:
+    """Assert the helper's action token POSITIONALLY, not by containment.
+
+    The helper prints `claude-md-sentinel: <action> tier=<T> at <path>`, so
+    `action in stdout` is satisfied by any fixture directory whose own name
+    carries the needle, whatever action was really emitted. Anchoring on the
+    prefix makes this a claim about the token rather than about the line."""
+    prefix = f"claude-md-sentinel: {action} "
+    if stdout.startswith(prefix):
+        print(f"  PASS: {label} (stdout starts with {prefix!r})")
+        return True
+    print(f"  FAIL: {label}")
+    print(f"    expected prefix: {prefix!r}")
+    print(f"    actual stdout:   {stdout!r}")
+    return False
+
+
 def case_create(parent: Path) -> bool:
     """Case 1: no CLAUDE.md exists → create with frontmatter only."""
     print("\n== Case 1: create from absent CLAUDE.md ==")
@@ -99,15 +116,41 @@ def case_create(parent: Path) -> bool:
 
 
 def case_noop(parent: Path) -> bool:
-    """Case 2: existing frontmatter with same tier → noop, idempotent."""
+    """Case 2: existing frontmatter with same tier → noop, idempotent.
+
+    Two assertions here are deliberately stronger than the other cases'. The
+    action check is positional (see assert_action) because this fixture is
+    named `case2-noop`, so the path the helper echoes satisfies
+    `"noop" in stdout` unconditionally. And `noop` means the helper did not
+    WRITE, which a content comparison cannot see: re-writing the same tier
+    produces byte-identical content by construction. Measured 2026-09-04 with
+    both frontmatter noop guards disabled, the helper emitted `replaced` and
+    rewrote the file while the old containment-plus-content form stayed
+    green."""
     print("\n== Case 2: noop on idempotent re-invocation ==")
     fix = make_fixture(parent, "case2-noop", "---\ntier: T4\n---\n")
+    sentinel = fix / "CLAUDE.md"
+    # Pin the mtime into the past so any rewrite, however fast, moves it and
+    # no filesystem timestamp granularity can mask the write. Read the value
+    # back rather than assuming it stored exactly, since coarse filesystems
+    # round.
+    pinned_ns = 1_000_000_000 * 10 ** 9
+    os.utime(sentinel, ns=(pinned_ns, pinned_ns))
+    before_ns = sentinel.stat().st_mtime_ns
     rc, stdout, stderr = run_helper(fix, "T4")
+    after_ns = sentinel.stat().st_mtime_ns
     ok = True
     ok &= rc == 0
-    ok &= assert_contains("action=noop", stdout, "noop")
-    content = (fix / "CLAUDE.md").read_text(encoding="utf-8")
+    ok &= assert_action("action=noop", stdout, "noop")
+    content = sentinel.read_text(encoding="utf-8")
     ok &= assert_eq("file content unchanged", content, "---\ntier: T4\n---\n")
+    if after_ns == before_ns:
+        print("  PASS: sentinel not rewritten (mtime_ns unchanged)")
+    else:
+        print("  FAIL: sentinel was rewritten on a noop")
+        print(f"    mtime_ns before: {before_ns}")
+        print(f"    mtime_ns after:  {after_ns}")
+        ok = False
     return ok
 
 

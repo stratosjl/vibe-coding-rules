@@ -10,9 +10,19 @@
 # was not version-controlled and had to be reinstalled per machine).
 # v1.8.0 ship target per F-61-02 forward obligation.
 #
-# Behaviour: defer entirely to bin/publish-audit-combined.sh. Block the
-# push iff the harness exits non-zero (any tool FAIL). WARN-only results
-# (e.g., gitleaks absent) do not block.
+# Behaviour: resolve the commits being pushed from the ref lines git puts
+# on stdin, publish them to the environment, then defer the auditing
+# entirely to bin/publish-audit-combined.sh. Block the push on any non-zero
+# exit from that harness, which now covers two distinct cases: a tool that
+# reported a leak or regression (rc=1), and a tool that could not run at all
+# (rc=3). Both block.
+#
+# This paragraph used to say that a WARN row meant a tool had NOT run and
+# that such a result did not block. That was true of the harness before
+# v1.25.0 and is now the opposite of its policy: WARN means a tool RAN and
+# reported known-noise, no tool currently emits it, and a tool that did not
+# run is NOTRUN, which exits 3 and blocks. So a zero exit here does mean
+# every tool ran and none reported a defect.
 
 set -uo pipefail
 
@@ -24,16 +34,207 @@ if [ ! -r "$HARNESS" ]; then
   exit 1
 fi
 
+# --- name the commits being pushed (F003 / F084) --------------------------
+# git hands a pre-push hook one line per ref on stdin:
+#
+#     <local ref> <local sha> <remote ref> <remote sha>
+#
+# This hook used to read none of it, so the commits actually being pushed
+# were never named to anything downstream, and every operator-pattern scan
+# under the harness is working-tree scoped (bin/publish-audit.sh scans with a
+# bare `git grep`, which reads the checked-out tree). A DENY hit that exists
+# in a pushed commit but not in the current tree was therefore outside the
+# gate's field of view entirely, and the gate printed "Safe to push" over it.
+# Resolve the range here, where git supplies it, and publish it.
+#
+# Two variables, because a consumer has to be able to tell "these are the
+# commits" from "I could not work them out":
+#
+#   VC_ROE_PUSH_SCOPE    commits | empty | unknown
+#   VC_ROE_PUSH_COMMITS  space-separated full SHAs, non-empty only when
+#                        VC_ROE_PUSH_SCOPE=commits
+#
+# unknown is the fail-closed state and MUST NOT be read as "nothing to scan".
+# A consumer keeps its working-tree scan in EVERY case and adds the commit
+# scan on top when the scope is `commits`: scanning the commits INSTEAD of
+# the tree would trade one blind spot for another, since uncommitted work
+# becomes pushable the moment it is committed.
+#
+# Resolved SHAs rather than the rev-list range expression the finding
+# sketched, because `git rev-list A --not --remotes B..C` flips the sense of
+# everything after `--not`, so per-ref ranges cannot be concatenated into one
+# safe argument string. Resolving them here removes that hazard from every
+# consumer.
+#
+# SCOPE: this half only NAMES the commits. Nothing under bin/ reads either
+# variable yet (measured 2026-09-04: `grep -rn VC_ROE_PUSH bin/` exits 1 with
+# no hits, against a positive control where `grep -rn VC_ROE_ bin/` matched 3
+# lines in bin/anchor-rewrite.sh), so the gate is NOT closed by this file
+# alone and nothing printed here claims it is. The consumer half is spelled
+# out in the deferral: bin/publish-audit.sh scan_pattern() must scan
+# `git grep -nE "$1" $VC_ROE_PUSH_COMMITS` in UNION with its existing
+# working-tree form when the scope is `commits`.
+VC_ROE_PUSH_SCOPE=unknown
+VC_ROE_PUSH_COMMITS=""
+export VC_ROE_PUSH_SCOPE VC_ROE_PUSH_COMMITS
+
+# All-zero sha: git's marker for "no such ref" (deleting a branch, or
+# creating one that the remote does not have yet).
+vc_roe_is_zero_sha() {
+  case "$1" in
+    ""|*[!0]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if [ -t 0 ]; then
+  # Hand invocation from a terminal. `read` would block forever on an
+  # operator typing `bash .githooks/pre-push`, so declare the scope unknown
+  # rather than hang.
+  vc_roe_push_why="stdin is a terminal, so git supplied no ref lines"
+else
+  vc_roe_push_remote="${1:-}"
+  vc_roe_push_raw=""
+  vc_roe_push_seen=0
+  vc_roe_push_broke=""
+  # vc_r_ref is read but never used: it holds field 3, and dropping it
+  # would slide field 4, the remote oid, into field 3.
+  # shellcheck disable=SC2034
+  while read -r vc_l_ref vc_l_sha vc_r_ref vc_r_sha; do
+    vc_roe_push_seen=$((vc_roe_push_seen + 1))
+    # Both oid fields must be present and hexadecimal, and they are tested
+    # SEPARATELY. Measured 2026-09-04 on a two-field line: an empty remote
+    # oid reached `git rev-list "..$local"`, whose empty left side DEFAULTS
+    # TO HEAD, so the range resolved to nothing and this block reported
+    # `empty` while nothing had been examined. The first repair concatenated
+    # the two fields and tested once, which is vacuous for exactly that
+    # shape, since "<ref> <oid>" concatenates to valid hex and passes. A
+    # malformed line now fails closed, because a range that resolves to
+    # nothing scans nothing and still reads as clean.
+    vc_bad=0
+    case "${vc_l_sha:-}" in ""|*[!0-9a-fA-F]*) vc_bad=1 ;; esac
+    case "${vc_r_sha:-}" in ""|*[!0-9a-fA-F]*) vc_bad=1 ;; esac
+    if [ "$vc_bad" -ne 0 ]; then
+      vc_roe_push_broke="malformed ref line for ${vc_l_ref:-<no ref>}"
+      break
+    fi
+    # A deletion pushes no content; there is nothing to scan for it.
+    vc_roe_is_zero_sha "${vc_l_sha:-}" && continue
+    vc_rc=0
+    if vc_roe_is_zero_sha "${vc_r_sha:-}"; then
+      # New ref at the remote: bound it by what the remote already holds.
+      if [ -n "$vc_roe_push_remote" ]; then
+        vc_revs=$(git rev-list "$vc_l_sha" --not --remotes="$vc_roe_push_remote") || vc_rc=$?
+      else
+        vc_revs=$(git rev-list "$vc_l_sha" --not --remotes) || vc_rc=$?
+      fi
+    else
+      vc_revs=$(git rev-list "${vc_r_sha}..${vc_l_sha}") || vc_rc=$?
+    fi
+    if [ "$vc_rc" -ne 0 ]; then
+      # Do not silently drop a ref: a range that resolves to nothing scans
+      # nothing and still reads as clean, which is the defect this block
+      # exists to close.
+      vc_roe_push_broke="git rev-list failed (rc=$vc_rc) for ${vc_l_ref:-<no ref>}"
+      break
+    fi
+    vc_roe_push_raw="$vc_roe_push_raw $vc_revs"
+  done
+  if [ -n "$vc_roe_push_broke" ]; then
+    vc_roe_push_why="$vc_roe_push_broke"
+  elif [ "$vc_roe_push_seen" -eq 0 ]; then
+    vc_roe_push_why="no ref lines arrived on stdin"
+  else
+    # Deduplicate: two pushed refs can share commits, and a consumer that
+    # counts hits would otherwise count them twice.
+    # Unquoted on purpose: the word splitting IS the mechanism that turns
+    # the accumulated blob into one sha per line for sort -u.
+    # shellcheck disable=SC2086
+    vc_roe_push_list=$(printf '%s\n' $vc_roe_push_raw | sort -u | tr '\n' ' ')
+    vc_roe_push_list=${vc_roe_push_list% }
+    if [ -z "$vc_roe_push_list" ]; then
+      VC_ROE_PUSH_SCOPE=empty
+      echo "vc-roe pre-push: 0 new commit(s) in this push." >&2
+    elif [ "${#vc_roe_push_list}" -gt 24000 ]; then
+      # Refuse to truncate. A partial list is a silent under-scan, and an
+      # over-long environment variable can fail the exec below outright
+      # (32767 bytes per variable on Windows).
+      vc_roe_push_why="commit list too large to publish (${#vc_roe_push_list} bytes)"
+    else
+      VC_ROE_PUSH_COMMITS="$vc_roe_push_list"
+      VC_ROE_PUSH_SCOPE=commits
+      # Unquoted on purpose, as above: one sha per line so grep can count.
+      # shellcheck disable=SC2086
+      vc_roe_push_n=$(printf '%s\n' $vc_roe_push_list | grep -c .)
+      echo "vc-roe pre-push: $vc_roe_push_n commit(s) in this push, published as VC_ROE_PUSH_COMMITS." >&2
+    fi
+  fi
+fi
+
+if [ "$VC_ROE_PUSH_SCOPE" = "unknown" ]; then
+  echo "vc-roe pre-push: push range NOT resolved (${vc_roe_push_why:-reason unrecorded}); VC_ROE_PUSH_SCOPE=unknown." >&2
+fi
+
 echo "vc-roe pre-push: running combined-audit harness..." >&2
 bash "$HARNESS"
 audit_rc=$?
 
-if [ "$audit_rc" -ne 0 ]; then
+# Route by the harness's own documented exit codes rather than collapsing
+# every non-zero into one sentence. Before this, rc=1, 2, 3 and 127 all
+# printed "combined-audit FAILED" and sent the reader to --verbose.
+#
+# The contract is the one bin/publish-audit-combined.sh states in its own
+# header, and bin/publish-audit-state.sh documents the same mapping:
+#   0 - every tool ran and none reported a defect
+#   1 - one or more tools reported a leak or regression
+#   2 - usage error, the CALLER is wrong
+#   3 - NOT-RUNNABLE: one or more tools could not run, so the audit is
+#       incomplete and nothing in it says the tree is clean
+# Verified against the companion in the state this hook lands with: it emits
+# exit 3 at its notruns gate and exit 1 at its fails gate.
+#
+# The rc=3 arm is a DELIBERATE coupling to that contract, not a catch-all.
+# It matters because rc=3 is the ORDINARY path on a machine without gitleaks,
+# which is a missing dependency rather than a broken harness, and the
+# catch-all's wording sent that operator to repair a harness that had worked.
+# Every non-zero still blocks, so the arm corrects the DIAGNOSIS and never
+# opens the gate.
+if [ "$audit_rc" -eq 1 ]; then
   echo "" >&2
-  echo "vc-roe pre-push: combined-audit FAILED (rc=$audit_rc). Push BLOCKED." >&2
+  echo "vc-roe pre-push: combined-audit reported a leak / regression (rc=1). Push BLOCKED." >&2
   echo "Run 'bash bin/publish-audit-combined.sh --verbose' for per-tool detail." >&2
+  exit 1
+elif [ "$audit_rc" -eq 3 ]; then
+  echo "" >&2
+  echo "vc-roe pre-push: combined-audit INCOMPLETE (rc=3). Push BLOCKED." >&2
+  echo "One or more tools could not run, so nothing above says the tree is clean." >&2
+  echo "The harness itself worked. Each NOTRUN row above names what could not run and why:" >&2
+  echo "a missing tool to install, or a dependency such as the origin remote to repair." >&2
+  exit 1
+elif [ "$audit_rc" -ne 0 ]; then
+  echo "" >&2
+  echo "vc-roe pre-push: combined-audit could NOT RUN (rc=$audit_rc). Push BLOCKED." >&2
+  echo "This is the harness itself failing rather than a finding about the content." >&2
+  echo "Run 'bash bin/publish-audit-combined.sh' directly and repair the harness first." >&2
   exit 1
 fi
 
-echo "vc-roe pre-push: combined-audit clean. Proceeding with push." >&2
+# This line used to read "combined-audit clean. Proceeding with push." and it
+# is the LAST thing printed, so it overwrote whatever the harness had just
+# said about its own coverage.
+#
+# It can now make the stronger claim honestly. The companion never exits 0
+# when any tool did not run, so rc=0 means every tool ran AND none reported a
+# defect, and full coverage is implied by the code rather than asserted here.
+# Stated that way on purpose: the companion's fails gate PRECEDES its notruns
+# gate, so a run carrying both a FAIL and a NOTRUN exits 1 rather than 3. It
+# is therefore wrong to say it "exits 3 whenever a tool did not run"; what
+# holds, and what this line depends on, is that neither condition can reach 0.
+#
+# It deliberately says nothing about WARN. The companion's own status table
+# defines WARN as a tool that RAN and reported known-noise, and records that
+# no tool currently emits it; a tool that did not run is NOTRUN and exits 3.
+# An earlier version of this line told the operator that a WARN row meant a
+# tool had not run, which is the opposite of the policy the companion states.
+echo "vc-roe pre-push: all tools ran and none reported a FAIL. Proceeding with push." >&2
 exit 0

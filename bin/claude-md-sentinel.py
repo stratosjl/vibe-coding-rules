@@ -41,8 +41,25 @@ gap that motivated 1b).
 
 Exit codes:
     0   success (action printed to stdout: created|prepended|inserted|noop|replaced)
-    1   argument validation failure
-    2   IO failure (write/atomic-replace failed)
+    1   argument validation failure (invalid tier, --project-root not a directory)
+    2   usage error raised by argparse (unknown flag or choice, missing argument)
+    3   NOT-RUNNABLE: the environment is wrong, e.g. CLAUDE.md cannot be written
+
+    3 is new at v1.25.0 and dissolves a real collision. The write failure used
+    to return 2, which argparse had always been returning for a usage error, so
+    a caller seeing 2 could not tell "you passed a bad flag" from "your
+    CLAUDE.md is locked or read-only". See methodology-content/T2.md item 2.
+
+    1 is NOT that table's "ran, found a defect". Here it means the CALLER is
+    wrong (an invalid tier, or a --project-root that is not a directory), which
+    the table places at 2. It is kept at 1 under the same item's "do not
+    renumber codes that already discriminate correctly" clause: 1, 2 and 3 now
+    carry one meaning each, and test-claude-md-sentinel.py:184 pins 1. One
+    divergence a reader should be told rather than left to discover: the
+    sibling tier helper bin/anchor-rewrite.sh answers the same bad-tier
+    argument with 2 (test-exit-contract.py:133). Aligning the two is a one-line
+    change here plus a one-line change in that test, so it is left to the
+    operator rather than made from inside this file alone.
 """
 from __future__ import annotations
 
@@ -109,7 +126,22 @@ def resolve_project_root(override: Optional[str]) -> Path:
     return find_git_root(cwd) or cwd
 
 
-def atomic_write(target: Path, content: str) -> None:
+def detect_newline(raw_text: str) -> str:
+    """Return the terminator to write back: CRLF when it dominates, else LF.
+
+    Call this on the RAW decoded text, before any universal-newline
+    translation, so the counts are of what is actually on disk. Without it the
+    read side collapses CRLF to LF, atomic_write's fixed "\\n" never restores
+    it, and the first MUTATING run rewrites every line of an operator's CRLF
+    CLAUDE.md: git then reports the whole file as changed instead of the four
+    frontmatter lines that were actually added.
+    """
+    crlf = raw_text.count("\r\n")
+    lf = raw_text.count("\n") - crlf
+    return "\r\n" if crlf > lf else "\n"
+
+
+def atomic_write(target: Path, content: str, newline: str = "\n") -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         prefix=target.name + ".",
@@ -117,7 +149,7 @@ def atomic_write(target: Path, content: str) -> None:
         dir=str(target.parent),
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
             f.write(content)
             f.flush()
             try:
@@ -169,7 +201,14 @@ def write_sentinel(project_root: Path, new_tier: str, target: str = "CLAUDE.md")
         atomic_write(claude_md, content)
         return "created"
 
-    text = claude_md.read_text(encoding="utf-8")
+    # read_bytes().decode rather than read_text(): read_text applies
+    # universal-newline translation, and its newline="" opt-out is 3.13+ while
+    # this script declares no minimum version. Translate to "\n" here so every
+    # regex below still works on LF text, and carry the file's own terminator
+    # through to atomic_write so it is written back the way it was found.
+    raw = claude_md.read_bytes().decode("utf-8")
+    newline = detect_newline(raw)
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
     fm_match = FRONTMATTER_RE.match(text)
 
     if fm_match:
@@ -181,7 +220,7 @@ def write_sentinel(project_root: Path, new_tier: str, target: str = "CLAUDE.md")
         new_text = f"---\n{new_block_body}\n---\n{rest}" if rest.startswith("\n") or not rest else f"---\n{new_block_body}\n---\n\n{rest}"
         if new_text == text:
             return "noop"
-        atomic_write(claude_md, new_text)
+        atomic_write(claude_md, new_text, newline=newline)
         # Distinguish insert vs replace by whether the old block had a tier line.
         had_tier = re.search(r"^\s*tier:\s*T[0-4]\b", block_body, re.MULTILINE | re.IGNORECASE) is not None
         return "replaced" if had_tier else "inserted"
@@ -198,12 +237,12 @@ def write_sentinel(project_root: Path, new_tier: str, target: str = "CLAUDE.md")
         )
         if new_text == text:
             return "noop"
-        atomic_write(claude_md, new_text)
+        atomic_write(claude_md, new_text, newline=newline)
         return "replaced"
 
     prefix = f"---\ntier: {new_tier}\n---\n\n"
     new_text = prefix + text
-    atomic_write(claude_md, new_text)
+    atomic_write(claude_md, new_text, newline=newline)
     return "prepended"
 
 
@@ -248,8 +287,18 @@ def main(argv: list[str]) -> int:
     try:
         action = write_sentinel(project_root, new_tier, target)
     except OSError as e:
-        print(f"error: {target} write failed at {project_root}: {e}", file=sys.stderr)
-        return 2
+        # 3 rather than 2, because an unwritable, locked or read-only sentinel
+        # file is the ENVIRONMENT being wrong, while 2 is what argparse already
+        # emits when the CALLER is wrong. Measured 2026-09-04: with a directory
+        # sitting on the CLAUDE.md path this returned 2, byte-identical to the
+        # code from `--target BOGUS`. The six tier commands propagate this code
+        # verbatim (`exit "$rc"`) and already exit 3 for their own missing-helper
+        # case, so one command was reporting two environment failures as 3 and 2.
+        print(
+            f"error: NOT-RUNNABLE: {target} write failed at {project_root}: {e}",
+            file=sys.stderr,
+        )
+        return 3
 
     claude_md = project_root / target
     print(f"claude-md-sentinel: {action} tier={new_tier} at {claude_md}")

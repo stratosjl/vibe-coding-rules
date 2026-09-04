@@ -352,11 +352,37 @@ def _log_size(A) -> int:
         return 0
 
 
+def _logged_no_cwd(writer, offset: int, sid: str) -> bool:
+    """True iff the window holds a no-cwd row written by THIS run.
+
+    Both markers must sit on ONE line, so a foreign no-cwd row cannot be
+    paired with some unrelated row carrying the session id to satisfy the
+    check between them.
+    """
+    needle_sid = f'"session_id": "{sid}"'
+    for line in _log_since(writer, offset).splitlines():
+        if '"phase": "no-cwd"' in line and needle_sid in line:
+            return True
+    return False
+
+
+def _writer_module(hook_mod):
+    """The _adapter module the hook actually logs through.
+
+    NOT the same object as this file's own load("_adapter.py", ...): the
+    hooks do a plain `import _adapter`, so redirecting only the test copy
+    would leave the writer pointed at the real log and break the read-back.
+    """
+    return hook_mod.A
+
+
 def t_session_start_no_cwd_noop() -> None:
     A = load("_adapter.py", "kimi_adapter")
     ss = load("session_start.py", "kimi_session_start")
+    writer = _writer_module(ss)
     sid = f"ktest-nocwd-ss-{os.getpid()}"
     A.pop_pending(sid)  # clean slate
+    log_bak = writer.LOG_PATH
     with tempfile.TemporaryDirectory() as td:
         # Project-shaped fallback target: if the no-cwd guard is missing the
         # Claude module falls back to os.getcwd() and emits a slice.
@@ -365,33 +391,45 @@ def t_session_start_no_cwd_noop() -> None:
         (Path(td) / "handovers").mkdir()
         prev_cwd = os.getcwd()
         try:
+            # Isolate the log before the adapter runs: the assertion below reads
+            # it back, and the real one is the operator's live hook log.
+            writer.LOG_PATH = Path(td) / "kimi-hook.log"
             os.chdir(td)
             for label, ev in (("missing", {"hook_event_name": "SessionStart",
                                            "session_id": sid, "source": "startup"}),
                               ("empty", {"hook_event_name": "SessionStart",
                                          "session_id": sid, "cwd": "", "source": "startup"})):
-                before = _log_size(A)
+                before = _log_size(writer)
                 rc, out, _ = run_adapter(ss, ev)
                 check(f"ss: no-cwd ({label}) rc0 + silent stdout", rc == 0 and out == "")
                 check(f"ss: no-cwd ({label}) skip logged",
-                      '"phase": "no-cwd"' in _log_since(A, before))
+                      _logged_no_cwd(writer, before, sid))
         finally:
             os.chdir(prev_cwd)
+            writer.LOG_PATH = log_bak
     check("ss: no-cwd wrote no pending", A.pop_pending(sid) == "")
 
 
 def t_ptu_no_cwd_noop() -> None:
-    A = load("_adapter.py", "kimi_adapter")
     ptu = load("post_tool_use.py", "kimi_ptu")
-    for label, ev in (("missing", {"hook_event_name": "PostToolUse", "session_id": "ktest-nocwd-ptu",
-                                   "tool_name": "Edit", "tool_input": {"path": "/tmp/x"}}),
-                      ("empty", {"hook_event_name": "PostToolUse", "session_id": "ktest-nocwd-ptu",
-                                 "cwd": "", "tool_name": "Edit", "tool_input": {"path": "/tmp/x"}})):
-        before = _log_size(A)
-        rc, out, _ = run_adapter(ptu, ev)
-        check(f"ptu: no-cwd ({label}) rc0 + silent stdout", rc == 0 and out == "")
-        check(f"ptu: no-cwd ({label}) skip logged",
-              '"phase": "no-cwd"' in _log_since(A, before))
+    writer = _writer_module(ptu)
+    sid = f"ktest-nocwd-ptu-{os.getpid()}"
+    log_bak = writer.LOG_PATH
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            writer.LOG_PATH = Path(td) / "kimi-hook.log"
+            for label, ev in (("missing", {"hook_event_name": "PostToolUse", "session_id": sid,
+                                           "tool_name": "Edit", "tool_input": {"path": "/tmp/x"}}),
+                              ("empty", {"hook_event_name": "PostToolUse", "session_id": sid,
+                                         "cwd": "", "tool_name": "Edit",
+                                         "tool_input": {"path": "/tmp/x"}})):
+                before = _log_size(writer)
+                rc, out, _ = run_adapter(ptu, ev)
+                check(f"ptu: no-cwd ({label}) rc0 + silent stdout", rc == 0 and out == "")
+                check(f"ptu: no-cwd ({label}) skip logged",
+                      _logged_no_cwd(writer, before, sid))
+        finally:
+            writer.LOG_PATH = log_bak
 
 
 ALL_TESTS += [("stop-trust-2x", t_stop_trust_2x_escape),

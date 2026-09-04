@@ -5,8 +5,14 @@ Pull requests welcome. Before you open one, three things make merging easier.
 ## Run the validation suite cleanly
 
 ```bash
-python3 test-detection.py
+python3 test-detection.py   # Linux, macOS
+python test-detection.py    # Windows
 ```
+
+On Windows `python3` is the Microsoft Store app-execution alias: it passes a
+`command -v` existence check and then exits 49 having run nothing, so use
+`python` there. `bin/publish-audit-combined.sh` probes both candidates by
+running `--version` for exactly this reason; do the same in any new script.
 
 The runner spins up synthetic project fixtures under a temp dir and exercises the SessionStart hook against each. Any failure means the detection logic regressed; fix or document before opening the PR.
 
@@ -18,7 +24,21 @@ vc-roe ships a version-controlled pre-push hook at `.githooks/pre-push` that run
 bash bin/install-hooks.sh
 ```
 
-The bootstrap sets `git config --local core.hooksPath .githooks`. It is idempotent — safe to re-run. After install, every `git push` from this clone runs the combined-audit harness (six tools: `publish-audit.sh`, `publish-audit-state.sh`, `gitleaks` HEAD + history, `test-audit-patterns.py`, inline credential heuristics) and blocks on any FAIL. WARN-only results (e.g., `gitleaks` not installed) do not block.
+The bootstrap sets `git config --local core.hooksPath .githooks`. It is idempotent — safe to re-run. After install, every `git push` from this clone runs the combined-audit harness (seven tools: `publish-audit.sh`, `publish-audit-state.sh`, `gitleaks` HEAD + history, `test-audit-patterns.py`, inline credential heuristics, `test-version-lockstep.py`) and blocks on any FAIL. Since v1.25.0 it also blocks when any tool could NOT RUN: a missing `gitleaks` is recorded NOTRUN and the harness exits 3, because an audit that did not happen is not an audit that found nothing. WARN is reserved for a tool that ran and reported known-noise, and no tool currently emits it.
+
+**Keep cannot-run distinguishable from pass.** Each tool exits 0 for "scanned,
+found nothing" and the harness records that as PASS, so a tool that ALSO returns
+0 when it could not scan turns a leak into a green push. Measured 2026-09-04 on
+`bin/publish-audit.sh` as it stood BEFORE v1.25.0, when its DENY and WARN
+scans all routed through one `git grep` with stderr discarded: with one of the
+scaffold's own two private-network DENY patterns (see `bin/audit-patterns.sh`)
+planted in a tracked file it exited 1 and aborted in a healthy repo, and exited
+0 with a clean summary both when `.git` was absent and when `git` was off
+`PATH`. v1.25.0 closed that: the scan now keeps git's exit code and its stderr,
+and reports NOT-RUNNABLE with exit 3 rather than a confident zero. If you
+touch a gate tool, give its cannot-run paths the exit-code contract's 3
+(NOT-RUNNABLE) and add the negative arm proving that code fires, rather than
+letting them fall through to 0.
 
 Run the harness manually any time:
 
@@ -34,6 +54,23 @@ bash bin/publish-audit-combined.sh --verbose # full per-tool output
 This dispatcher chain is the standard pattern for keeping the version-controlled pre-push gate at `.githooks/pre-push` while preserving any operator-local post-event automation (sync hooks, notification scripts, custom logging) that the contributor installs into `.git/hooks/post-*` per clone. There is no need to re-install operator-local post-* hooks after running `bin/install-hooks.sh`; the dispatchers forward to whatever already exists there.
 
 If you do not have operator-local post-* hooks, the dispatchers are inert and require no additional configuration.
+
+**But the redirect is wider than the three dispatchers.** `core.hooksPath` makes
+git ignore `.git/hooks/` **entirely**, so the only hooks that still run are the
+four `.githooks/` carries: `pre-push`, `post-commit`, `post-merge`,
+`post-checkout`. Of those, only the three post-* dispatchers forward to a local
+equivalent; `.githooks/pre-push` deliberately replaces yours. Every OTHER
+operator-local hook stops firing, silently. Git says nothing, and
+`bin/install-hooks.sh` surfaces a shadowed `.git/hooks/pre-push` and, since
+v1.25.0, also lists every other local hook that `.githooks/` does not carry, so a
+shadowed `pre-commit` is now named rather than left to be discovered. Measured
+2026-09-04 with a local `pre-commit` and a local `post-commit` in one clone:
+before the bootstrap both fire, after it only `post-commit` does, through its
+dispatcher. `pre-commit` and `commit-msg` are
+the usual casualties, because lint, format and secret-scan hooks live there. If
+one of yours is shadowed, copy `.githooks/post-commit` to `.githooks/<name>` and
+change the hook name in its `LOCAL=` line (that path is hard-coded per event),
+or run that tooling another way.
 
 ## Bump ONE version, and let the guard prove it
 
@@ -135,15 +172,15 @@ def session_start_block(detection: dict, tier: str) -> tuple[str, str]:
            before the "## Tier detection trace" section. Return "" to add
            nothing. End multi-line blocks with a trailing blank line so the
            following section stays separated.
-    state: a one-word trace token rendered on the `resumption_audit:` line
+    state: a one-word trace token rendered on the `session_start_addon:` line
            of the tier-detection trace (e.g. "clean", "drift", "stale").
     """
     return ("", "none")
 ```
 
 - `detection` is the resolved tier-detection dict (keys include `tier`, `scope`, `crit`, `source`, `signals`, `project_root`); `tier` is the effective tier string.
-- The seam is **opt-in and machine-local**. This repo ships **no** `vc_roe_local_addons` module, and a plain install has no `~/.claude/vc-roe-addons` directory, so the seam is skipped entirely and `resumption_audit:` reads `none`.
-- It is **fully fail-soft**: any import or runtime error degrades to an empty block and `resumption_audit: error`, and never affects session start. This is covered by `test-session-start-addon.py`.
+- The seam is **opt-in and machine-local**. This repo ships **no** `vc_roe_local_addons` module, and a plain install has no `~/.claude/vc-roe-addons` directory, so the seam is skipped entirely and `session_start_addon:` reads `none`.
+- It is **fully fail-soft**: any import or runtime error degrades to an empty block and `session_start_addon: error`, and never affects session start. This is covered by `test-session-start-addon.py`.
 
 This is the supported way to layer private behaviour onto SessionStart. The "Changes that depend on a private add-on layer being present at runtime" exclusion below still holds: the *hook* must work identically with the addon absent, which the fail-soft contract guarantees.
 

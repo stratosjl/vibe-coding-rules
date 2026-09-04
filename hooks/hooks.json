@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py\"",
             "timeout": 20
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.py",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.py\"",
             "timeout": 5
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.py",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.py\"",
             "timeout": 5
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/stop.py",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.py\"",
             "timeout": 5
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.py",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.py\"",
             "timeout": 5
           }
         ]

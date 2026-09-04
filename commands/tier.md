@@ -127,10 +127,19 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
 7. **Set the project tier floor (always; v1.13.0 sticky-on-explicit).** Any `/tier T<N>` invocation now writes the floor (closes 1a). Run:
    ```bash
    TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
-   PROJ_DIRNAME=$(python -c 'import os, re; print(re.sub(r"[^A-Za-z0-9-]", "-", os.path.realpath(os.getcwd())))')  # OBS-MET-AJ
+   PROJ_DIRNAME=$(python -c 'import os, re; print(re.sub(r"[^A-Za-z0-9-]", "-", os.path.realpath(os.getcwd())))'); rc=$?  # OBS-MET-AJ
+   if [ "$rc" != 0 ] || [ -z "$PROJ_DIRNAME" ]; then
+     echo "NOT-RUNNABLE: the project key did not resolve (python exited $rc, or printed nothing)."
+     echo "NOT-RUNNABLE: the project tier floor was NOT written. The tier is NOT sticky for this project."
+     exit 3
+   fi
    PROJ_DIR="$HOME/.claude/projects/$PROJ_DIRNAME"
    mkdir -p "$PROJ_DIR" 2>/dev/null
-   echo "$TIER" > "$PROJ_DIR/methodology-tier-floor"  # MUST be uppercase: read_tier_floor() is case-sensitive
+   if ! echo "$TIER" > "$PROJ_DIR/methodology-tier-floor"; then  # MUST be uppercase: read_tier_floor() is case-sensitive
+     echo "NOT-RUNNABLE: the write to $PROJ_DIR/methodology-tier-floor failed."
+     echo "NOT-RUNNABLE: the project tier floor was NOT written. The tier is NOT sticky for this project."
+     exit 3
+   fi
    echo "Project tier floor set to $TIER at $PROJ_DIR/methodology-tier-floor (sticky across all future sessions of this project)."
    ```
 8. **Write the `tier: T<N>` sentinel to project-root CLAUDE.md (always; v1.13.0 cross-machine portability).** Floor file is `~/.claude/projects/`-local cache; it does not git-sync. CLAUDE.md is git-committed, so the sentinel makes the override portable across all machines the project syncs to (closes 1b). Cross-platform helper at `bin/claude-md-sentinel.py` handles all six edit cases (insert into existing frontmatter, prepend new frontmatter, replace bare legacy `tier:` line, idempotent no-op, etc.):
@@ -183,7 +192,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    [ "$rc" = 0 ] || echo "claude-md-sentinel.py exited $rc; the sentinel was NOT written."
    exit "$rc"
    ```
-9. Disclose: `Tier set to $ARGUMENTS for this session, project tier floor set to $ARGUMENTS, AND tier: $ARGUMENTS sentinel written to project-root CLAUDE.md (sticky across all future sessions of this project AND portable across all machines the repo syncs to). Direction: <elevation|demotion|no-change>. Commit the CLAUDE.md change to git to propagate the override to other machines.`
+9. **Disclose only what actually landed.** If any of steps 6, 7 or 8 exited non-zero or printed a `NOT-RUNNABLE` banner, report that banner verbatim, name which of the three writes did not happen, and do NOT use the sentence below. Only when all three reported success, disclose: `Tier set to $ARGUMENTS for this session, project tier floor set to $ARGUMENTS, AND tier: $ARGUMENTS sentinel written to project-root CLAUDE.md (sticky across all future sessions of this project AND portable across all machines the repo syncs to). Direction: <elevation|demotion|no-change>. Commit the CLAUDE.md change to git to propagate the override to other machines.`
 
 If `$ARGUMENTS` is anything else:
 

@@ -51,9 +51,22 @@ if [ ! -d "$CACHE_BASE" ]; then
   exit 3
 fi
 
-LATEST_VERSION_DIR=$(ls -1 "$CACHE_BASE" 2>/dev/null | sort -V | tail -1)
+# The scan is filtered to MAJOR.MINOR.PATCH before it is sorted. `sort -V` is a
+# version sort applied to whatever names the directory happens to hold, so a
+# stray bundle copy outsorts the real bundle: measured, 1.24.0.bak, 1.24.0-old
+# and backup each beat 1.24.0, and the stale command bodies then landed in the
+# alias dir this file's header says takes precedence, at rc=0, with nothing on
+# stderr, under a summary line claiming they were byte-identical to the install.
+# All 44 versions shipped so far match the pattern; a pre-release name is
+# indistinguishable in shape from 1.24.0-old, so a cache with no match fails
+# closed at exit 3 rather than guessing.
+#
+# The `|| true` is load-bearing. grep exits 1 on zero matches, pipefail
+# propagates it, and the script would abort at rc=1 having printed nothing, so
+# the NOT-RUNNABLE guard below would never be reached. Do not remove it.
+LATEST_VERSION_DIR=$(ls -1 "$CACHE_BASE" 2>/dev/null | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)
 if [ -z "$LATEST_VERSION_DIR" ]; then
-  echo "NOT-RUNNABLE: no version dirs under $CACHE_BASE. Nothing was copied." >&2
+  echo "NOT-RUNNABLE: no MAJOR.MINOR.PATCH version dir under $CACHE_BASE. Nothing was copied." >&2
   exit 3
 fi
 
