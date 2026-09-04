@@ -67,9 +67,33 @@ if callable(_reconfigure):
     _reconfigure(encoding="utf-8", errors="replace")
 
 
-PLUGIN_ROOT = Path(
-    os.environ.get("CLAUDE_PLUGIN_ROOT", str(Path(__file__).resolve().parent.parent))
-)
+def _resolve_plugin_root() -> Path:
+    """Resolve this bundle's root, preferring the harness-supplied value.
+
+    Two hazards, both measured 2026-09-04 and both silent:
+
+    1. `os.environ.get(K, default)` returns "" for a variable that is SET AND
+       EMPTY, so the default never fires and Path("") becomes Path("."). Every
+       derived path then resolves against the CWD: detection-rules.json is not
+       found, and CONTENT_DIR points at a directory that has no slices in it.
+    2. A harness-supplied root that does not actually contain this plugin is
+       worse than no value, because it looks authoritative.
+
+    So: treat empty and whitespace as unset, and ACCEPT the env value only when
+    it carries the two directories this hook needs. Otherwise fall back to the
+    file's own location, which cannot be wrong.
+    """
+    here = Path(__file__).resolve().parent.parent
+    raw = (os.environ.get("CLAUDE_PLUGIN_ROOT") or "").strip()
+    if raw:
+        cand = Path(raw)
+        if (cand / "methodology-content").is_dir() and (cand / "detection-rules.json").is_file():
+            return cand
+    return here
+
+
+PLUGIN_ROOT = _resolve_plugin_root()
+
 DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
@@ -482,14 +506,49 @@ def label_for(s: Optional[str], c: Optional[str], rules: dict[str, Any]) -> str:
     return rules.get("labels", {}).get(f"{s}_{c}", f"{s}/{c}")
 
 
+SLICE_NOT_RUNNABLE = (
+    "# NOT-RUNNABLE: the {tier} methodology slice could not be loaded\n"
+    "\n"
+    "Expected at: `{path}`\n"
+    "Reason: {reason}\n"
+    "\n"
+    "**No methodology rules are in force for this session.** The tier stated above is a\n"
+    "DETECTION result, not a loaded rule set, and nothing below this line prescribes\n"
+    "anything.\n"
+    "\n"
+    "Do not proceed as though the tier's obligations had been loaded, and do not\n"
+    "reconstruct them from memory: a slice you half-remember is indistinguishable, in\n"
+    "the transcript, from one that loaded. Say in your FIRST reply that the slice\n"
+    "failed to load, quote the path above, and ask the operator whether to continue\n"
+    "with no methodology in force or to repair the install.\n"
+    "\n"
+    "Repair: confirm the plugin is installed and enabled, then re-open the session, or\n"
+    "run `/vc-roe:tier <TIER>` which loads the slice from the session's own recorded\n"
+    "plugin root.\n"
+)
+
+
 def load_slice(tier: str) -> str:
+    """Return the slice text, or a LOUD not-runnable banner.
+
+    This return value is injected verbatim into the SessionStart context as the
+    session's rule set. Until v1.24.0 the failure case returned a single comment
+    line, `# Methodology slice for T4 not found at ...`, which sat under a header
+    reading "Methodology in force: T4". A session opened that way carries the T4
+    first-line rule on every reply while holding none of T4's obligations, and
+    nothing in the transcript distinguishes it from a session that loaded them.
+    That is a CANNOT-RUN rendered as a PASS at the only consumer that matters.
+    """
     path = CONTENT_DIR / f"{tier}.md"
     if not path.is_file():
-        return f"# Methodology slice for {tier} not found at {path}"
+        return SLICE_NOT_RUNNABLE.format(tier=tier, path=path, reason="file does not exist")
     try:
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except Exception as e:
-        return f"# Methodology slice for {tier} could not be read: {e}"
+        return SLICE_NOT_RUNNABLE.format(tier=tier, path=path, reason=f"read failed: {e}")
+    if not text.strip():
+        return SLICE_NOT_RUNNABLE.format(tier=tier, path=path, reason="file is empty")
+    return text
 
 
 def append_log(entry: dict[str, Any]) -> None:
@@ -1026,27 +1085,64 @@ def format_publish_state(state: Optional[dict[str, Any]], now: int) -> str:
 
 
 def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str) -> None:
-    """Heartbeat-enforcement anchor (D-MET-39, v0.1.7).
+    """Heartbeat-enforcement anchor (D-MET-39, v0.1.7; PLUGIN_ROOT added v1.24.0).
 
-    Writes /tmp/claude-methodology-anchor-<session_id> with T0, LAST_HEARTBEAT,
-    and TIER on first SessionStart for the session. Idempotent across
-    resume/compact: existing anchor is preserved so wall-clock stays anchored
-    to the original session-open epoch.
+    Writes <tempdir>/claude-methodology-anchor-<session_id> with T0,
+    LAST_HEARTBEAT, TIER, PLUGIN_ROOT and PLUGIN_VERSION on first SessionStart
+    for the session. Idempotent across resume/compact: an existing anchor keeps
+    its T0, LAST_HEARTBEAT and TIER, so wall-clock stays anchored to the
+    original session-open epoch and a mid-session /tier override is not undone.
 
-    The companion UserPromptSubmit hook reads this file every turn to compute
-    elapsed-since-T0 and elapsed-since-LAST_HEARTBEAT; the Stop hook greps the
-    transcript for the heartbeat sentinel and updates LAST_HEARTBEAT.
+    PLUGIN_ROOT (v1.24.0, F-ROOT-01) is the load-bearing addition. The harness
+    passes this hook its own plugin root via CLAUDE_PLUGIN_ROOT; a slash
+    command's Bash block CANNOT see that variable (measured 2026-09-04: `env`
+    from a command block lists CLAUDE_CODE_* and no CLAUDE_PLUGIN_ROOT), so
+    before this change every command hand-rolled
+
+        find ~/.claude/plugins -name anchor-rewrite.sh | sort -V | tail -1
+
+    which resolves the HIGHEST VERSION ON DISK rather than the version this
+    session actually loaded. Measured the same day: a session ran the v1.23.0
+    methodology slice rendered by this hook while /tier resolved v1.22.0 from
+    the plugin cache and instructed the assistant to treat it as authoritative
+    for the rest of the session, silently dropping a mandatory T4 obligation.
+    The command printed slice text and exited 0, so the failure was
+    indistinguishable from success.
+
+    Stamping the root here makes the two provably the same object: the process
+    that rendered the SessionStart slice is the process that records where it
+    came from. An anchor written by an older version is AUGMENTED rather than
+    replaced, so a session upgraded mid-life still converges.
     """
     if not session_id:
         return
     try:
         path = ANCHOR_DIR / f"{ANCHOR_PREFIX}{session_id}"
+        fields = {
+            # as_posix(): the consumer is a slash command's Bash block, and Git Bash
+            # cannot stat a native Windows path with backslashes. Measured 2026-09-04.
+            "PLUGIN_ROOT": PLUGIN_ROOT.as_posix(),
+            "PLUGIN_VERSION": ROUTINE_VERSION,
+        }
         if path.exists():
+            existing = path.read_text(encoding="utf-8")
+            keys = set()
+            for line in existing.splitlines():
+                if "=" in line:
+                    keys.add(line.split("=", 1)[0])
+            missing = [k for k in fields if k not in keys]
+            if not missing:
+                return
+            if existing and not existing.endswith("\n"):
+                existing += "\n"
+            path.write_text(
+                existing + "".join(f"{k}={fields[k]}\n" for k in missing),
+                encoding="utf-8",
+            )
             return
-        path.write_text(
-            f"T0={t0_epoch}\nLAST_HEARTBEAT=0\nTIER={tier}\n",
-            encoding="utf-8",
-        )
+        rows = [f"T0={t0_epoch}", "LAST_HEARTBEAT=0", f"TIER={tier}"]
+        rows += [f"{k}={v}" for k, v in fields.items()]
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -1142,10 +1238,27 @@ def main() -> int:
         _addon_dir = Path.home() / ".claude" / "vc-roe-addons"
         if _addon_dir.is_dir():
             if str(_addon_dir) not in sys.path:
+                # vc-roe:runtime-state operator-local extension point, not a code
+                # dependency of any check. Its three states (absent / error /
+                # loaded) are DISTINGUISHABLE in the trace as session_start_addon,
+                # and none of them changes the verdict of anything, which is what
+                # the F-EXIT-01 contract actually requires.
                 sys.path.insert(0, str(_addon_dir))
             from vc_roe_local_addons import session_start_block  # type: ignore
             addon_block, addon_state = session_start_block(detection, tier)
-    except Exception:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException:
+        # BaseException, not Exception: a Rust-backed extension (pyo3) raises
+        # PanicException, whose MRO is [PanicException, BaseException, object],
+        # deliberately OUTSIDE Exception so ordinary handlers do not swallow it.
+        # An addon importing calamine, polars, pydantic-core, orjson or
+        # cryptography could therefore panic straight through a bare
+        # `except Exception` and take SessionStart down with it -- in the one
+        # block whose stated contract is "never affects session start". The
+        # re-raise above keeps Ctrl-C and sys.exit() working; widening without
+        # it makes the hook unkillable, which is a worse fault than the one
+        # being fixed.
         addon_block, addon_state = "", "error"
 
     # v1.3.0: chat-claim acquire (multi-chat-access protection per

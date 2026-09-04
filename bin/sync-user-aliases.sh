@@ -27,32 +27,40 @@ set -euo pipefail
 MARKETPLACE_NAME="vibe-coding-rules"
 USER_CMD_DIR="$HOME/.claude/commands"
 
-# Auto-detect plugin name in cache (vc-roe post-v1.0.0; vc-roe
-# pre-v1.0.0). Prefer vc-roe if both exist (operator transitioning).
-CACHE_BASE_VCROE="$HOME/.claude/plugins/cache/$MARKETPLACE_NAME/vc-roe"
-CACHE_BASE_LEGACY="$HOME/.claude/plugins/cache/$MARKETPLACE_NAME/vc-roe"
-if [ -d "$CACHE_BASE_VCROE" ]; then
-  PLUGIN_NAME="vc-roe"
-  CACHE_BASE="$CACHE_BASE_VCROE"
-elif [ -d "$CACHE_BASE_LEGACY" ]; then
-  PLUGIN_NAME="vc-roe"
-  CACHE_BASE="$CACHE_BASE_LEGACY"
-else
-  echo "ERROR: plugin cache dir not found at $CACHE_BASE_VCROE or $CACHE_BASE_LEGACY" >&2
-  echo "Is vc-roe@$MARKETPLACE_NAME (or vc-roe@$MARKETPLACE_NAME pre-v1.0.0) installed?" >&2
-  exit 1
+# Resolve the installed bundle.
+#
+# v1.24.0 removes a dead branch: CACHE_BASE_VCROE and CACHE_BASE_LEGACY were
+# byte-identical strings, because the v1.0.0 rename rewrote both sides of the
+# pair. The elif could never be taken and the error message named the same path
+# twice, which reads to whoever hits it as though two locations were searched.
+#
+# EXIT CONTRACT (F-EXIT-01): 0 ran, 1 found a defect, 2 usage, 3 NOT-RUNNABLE.
+# Everything below is NOT-RUNNABLE: the environment lacks a dependency, which is
+# a different fact from this script having found something wrong, and a caller
+# must be able to tell them apart.
+#
+# Picking the HIGHEST version here is correct, unlike in the slash commands: this
+# is an installer syncing aliases from the newest install, not a running session
+# that must use the bundle it actually loaded. Said explicitly because the two
+# look identical and one of them was a defect.
+CACHE_BASE="$HOME/.claude/plugins/cache/$MARKETPLACE_NAME/vc-roe"
+PLUGIN_NAME="vc-roe"
+if [ ! -d "$CACHE_BASE" ]; then
+  echo "NOT-RUNNABLE: plugin cache dir not found at $CACHE_BASE" >&2
+  echo "NOT-RUNNABLE: is vc-roe@$MARKETPLACE_NAME installed? Nothing was copied." >&2
+  exit 3
 fi
 
-LATEST_VERSION_DIR=$(ls -1 "$CACHE_BASE" | sort -V | tail -1)
+LATEST_VERSION_DIR=$(ls -1 "$CACHE_BASE" 2>/dev/null | sort -V | tail -1)
 if [ -z "$LATEST_VERSION_DIR" ]; then
-  echo "ERROR: no version dirs under $CACHE_BASE" >&2
-  exit 1
+  echo "NOT-RUNNABLE: no version dirs under $CACHE_BASE. Nothing was copied." >&2
+  exit 3
 fi
 
 PLUGIN_CMD_DIR="$CACHE_BASE/$LATEST_VERSION_DIR/commands"
 if [ ! -d "$PLUGIN_CMD_DIR" ]; then
-  echo "ERROR: plugin commands dir not found at $PLUGIN_CMD_DIR" >&2
-  exit 1
+  echo "NOT-RUNNABLE: plugin commands dir not found at $PLUGIN_CMD_DIR. Nothing was copied." >&2
+  exit 3
 fi
 
 mkdir -p "$USER_CMD_DIR"
