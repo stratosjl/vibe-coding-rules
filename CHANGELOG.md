@@ -4,6 +4,26 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.24.0
+
+Extends **T4 close element 1** so the regression floor must state its **denominator**: what it examined, not only that it ran and what it exited with. Minor-class semver, one element reworded in `methodology-content/T4.md` and its README mirror updated with it. No change to tier detection, the session-open cross-session audit added in v1.23.0, heartbeat cadence, the silent-stop blocker, the version-lockstep guard, or any audit pattern set.
+
+### The gap it closes
+
+Element 1 asked for three things and all three were the floor's OUTPUT: that it ran, its result, and its exit code or pass count. None of them asks what the floor covered, so a floor whose denominator is zero discharges the close completely and honestly, and nothing in the close can notice. A working floor and a vacuous one emit the same pass and the same exit code 0, so only the count of what was examined separates them.
+
+v1.23.0 made the **register** prove its denominator, on the reasoning that a check whose denominator is a file that does not exist cannot fail. Element 8a was hardened separately so the handover is re-audited last. Element 1 was untouched by both, which left the same defect shape inside the artefact the close trusts most.
+
+### The measurement behind it
+
+Reported 2026-09-06 by a peer session on another project of this fleet, and recorded there rather than reproduced here. Its own element-1 floor read its inputs in one directory, its denominator on that machine was zero, and it passed while being structurally incapable of failing. Its output carried the tell beside the verdict: a zero count of files examined, next to PASS. Proven with the code version as the only variable and a planted input, pre-fix PASS at exit 0 and blind, fixed FAIL at exit 1 naming the file.
+
+**The severity is in how it surfaced.** That defect became visible only because the floor's self-test happened to go red. Had the floor been vacuous while its self-test passed, the close would have quoted a healthy and rising pass count every session and been formally compliant with element 1 throughout. So the detectable case is the lucky one, and the general case is invisible by construction.
+
+### What element 1 now requires
+
+The close states how many units the floor covered and what it could not reach, and treats a floor that covered nothing as an unmeasured result rather than a clean one. Where the floor carries a self-test, whether that self-test currently passes is part of the close, because a floor whose self-test cannot pass makes every red arm below it inconclusive.
+
 ## v1.23.0
 
 Adds a **session-open cross-session audit at T4**: before substantive work begins, a T4 session audits scope, decisions and open issues across ALL sessions, not only against the last handover. Minor-class semver: a new mandatory obligation in `methodology-content/T4.md`, no change to tier detection, heartbeat cadence, the silent-stop blocker, the version-lockstep guard or any audit pattern set.
