@@ -84,6 +84,38 @@ v1.21.0: the manifest read `1.21.0` while all eight mirrors still read `1.20.2`,
 in the working tree AND in the installed plugin cache, so every hook log entry
 stamped the wrong version and no test noticed. Recorded as I-22.
 
+## TAG EVERY RELEASE. Since 2026-09-10 an untagged release does not ship
+
+After the version bump and the push, create an **annotated** tag named `v<version>`
+on the released commit and push it:
+
+```sh
+git tag -a v1.25.0 <sha> -m "v1.25.0: <one line>"
+git push origin v1.25.0
+git ls-remote --tags origin | grep v1.25.0   # verify at the remote, not locally
+```
+
+**This is load-bearing rather than tidy.** The fleet's pinned-plugin config
+(`plugin-upstream-sync/config.json`) moved vc-roe from `track=head` to
+`track=latest-tag` on 2026-09-10, because under `head` the installer's
+`new_install_path` equals the current path, its `rm -rf` guard is skipped, and
+`git archive | tar -x` then overwrites and adds without ever DELETING, so a file
+retired upstream would persist in every installed copy indefinitely. A tag
+installs into a fresh `<version>` directory that cannot carry a stale file.
+
+The cost is the mirror image and it is silent: **a release that is never tagged is
+never installed anywhere.** The resolver takes the highest tag by version sort, so
+the fleet simply stays where it is and nothing reports it. Tags had already lapsed
+at **v1.20.2** while the plugin shipped through **1.24.0**, which is 4 releases
+that would not have shipped under the new track.
+
+One command closes the loop after a release, and it belongs in the same session:
+
+```sh
+test "$(git tag --sort=-v:refname | head -1)" = "v$(jq -r .version .claude-plugin/plugin.json)" \
+  && echo "tag matches manifest" || echo "UNTAGGED RELEASE: this will not ship"
+```
+
 After tagging a release, also sync any managed install copies of the plugin on the release machine (the Kimi Code managed plugins directory, the Claude Code plugin cache). They are plain mirrors of the tree, and a stale copy silently runs the previous release's hooks. Re-running the installer or an `rsync -a --delete --exclude .git` from the repo root both work.
 
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
