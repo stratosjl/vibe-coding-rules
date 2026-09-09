@@ -4,6 +4,28 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.25.0
+
+Sharpens **T3 item 12 clause (2)**, inherited by T4: the session performs the close-time push **itself** and verifies it at the remote. Handing the push to the operator as a closing instruction is stated explicitly as NOT discharging the obligation. Minor-class semver, one clause reworded in `methodology-content/T3.md` with its one-line summary in `methodology-content/T4.md` kept in step. No change to tier detection, the session-open cross-session audit, the eleven-element close, heartbeat cadence, the version-lockstep guard, or any audit pattern set.
+
+### The gap it closes
+
+Clause (2) already said "at session close, commit and push session-meaningful local changes". It did not say **who**, so a session could close by instructing the operator to push and be formally compliant with the words. The obligation then becomes a manual step performed later or not at all, and the canonical copy is stale for as long as it takes: exactly the divergence clause (1) makes an operator decision point at the next resumption. One obligation was quietly generating the condition another obligation exists to catch.
+
+It is not a missing rule. It is a rule whose subject was unstated, which is why restating the requirement a third time would have been the wrong fix. What v1.25.0 adds is the actor, the standing authorisation so the step is not re-negotiated at every close, and an observable artefact so a failed push cannot pass as a completed one.
+
+### What clause (2) now requires
+
+- **The session commits and pushes.** Instructing the operator to do it does not discharge the clause.
+- **The push is authorised by the item itself**, so it is not re-asked at close. The T1 confirmation gate is unchanged and still covers the irreversible-action list, force-push above all.
+- **Verification is against the remote, not the tracking ref.** A local `HEAD...@{u}` comparison reports level when the tracking ref is stale, and reports `0 0` when the branch's configured upstream does not resolve at all, so the check that looks like it passed is the one that never ran. Ask the remote for the ref and read back the sha.
+- **A session with nothing session-meaningful discharges it in negative scope**, which leaves a positive record rather than an absent one.
+- **The authorisation covers the push, not the staging.** Commit the paths the session named and no others: a working tree can carry another session's uncommitted work, and a close-time sweep is how it gets committed under an unrelated message.
+
+### Also in this release
+
+The single em dash in `methodology-content/T3.md` is retired for a colon, on the line this release rewrites.
+
 ## v1.24.0
 
 Extends **T4 close element 1** so the regression floor must state its **denominator**: what it examined, not only that it ran and what it exited with. Minor-class semver, one element reworded in `methodology-content/T4.md` and its README mirror updated with it. No change to tier detection, the session-open cross-session audit added in v1.23.0, heartbeat cadence, the silent-stop blocker, the version-lockstep guard, or any audit pattern set.
