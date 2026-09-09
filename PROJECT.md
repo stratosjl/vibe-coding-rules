@@ -10,3 +10,5 @@ operator-private information.
 Existing project records:
 
 - [README.md](README.md)
+- [Native Codex continuation](codex/README.md) defines contract registration,
+  evidence checks, interruption handling and installation verification.
