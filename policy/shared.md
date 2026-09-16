@@ -20,3 +20,17 @@ authorization already given; ask only when the action exceeds it or required
 information is missing. Technical prerequisites remain in force after approval.
 Runtime permissions are controlled by the active tool environment; an instruction
 file cannot grant access or change that environment's approval policy.
+
+Keep the overall authorized outcome and its acceptance criteria in view when a
+subtask finishes. A status question or complaint normally changes how to proceed;
+it does not cancel the unfinished work. Perform authorized mechanical edits and
+keep their implementation and checks proportionate to the change.
+
+For work with multiple deliverables, register the objective, expected artifacts,
+required checks, dependencies and missing inputs with the available native
+continuation mechanism. Ask only for facts or decisions the affected tasks need,
+and continue independent authorized work. Preserve an explicit stop and record
+which processes or agents were actually confirmed stopped. A passing local check
+does not clear another failed requirement. The
+[Codex integration](../codex/README.md) provides a tested mechanism for registered
+work and states the limits of its runtime enforcement.
