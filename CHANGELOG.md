@@ -4,6 +4,57 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.25.1
+
+Patch. `/tier` accepted a lower-case argument and then wrote it, unchanged, into three places that
+each need the canonical `T<N>` token. Measured on 2026-09-16 with `/vc-roe:tier t3`.
+
+| step | what `t3` did | how it read |
+|---|---|---|
+| 5, slice load | `methodology-content/t3.md` misses on a case-sensitive filesystem | printed the "falling back to general familiarity" line while the acknowledgement still read as success |
+| 6, anchor | `anchor-rewrite.sh` refused it correctly (`rc=1`), but the caller's `A && B \|\| C` idiom then printed *not resolvable* | a refusal reported as a missing plugin, which sends the reader to the wrong repair |
+| 7, tier floor | wrote `t3` to `methodology-tier-floor`; `read_tier_floor()` matched `re.fullmatch(r"T[0-4]", text)` with no `IGNORECASE` | **silent.** The floor was dead for every future session of that project and nothing said so |
+
+The sentinel written in step 8 survived, because `find_tier_in_claude_md` already reads with
+`IGNORECASE`. In the project where this surfaced the sentinel already said `T3`, so the tier held
+and the poisoned floor underneath it was invisible.
+
+### What changed
+
+- `commands/tier.md` and `commands-kimi/tier.md` derive `TIER` once per shell block
+  (`printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]'`) and use it for the slice path, the
+  `anchor-rewrite.sh` argument, the floor write and the sentinel call. No raw `$ARGUMENTS` is left
+  inside any fenced bash block, which is asserted rather than assumed.
+- Step 6 becomes an `if`/`else` with the exit code captured on its own line, so a refusal says
+  `REFUSED tier '<T>' (rc=1) ... the heartbeat TIER is UNCHANGED` instead of claiming the script
+  was not found.
+- `hooks/session-start.py`: `read_tier_floor` and `read_tier_floor_previous` now match with
+  `IGNORECASE` and return `text.upper()`, bringing them into line with the sentinel reader beside
+  them. This also repairs any floor already written lower-case on any machine.
+- Prose in both command files states that matching is case-insensitive and that every artefact and
+  every printed line uses the uppercase form.
+
+`bin/anchor-rewrite.sh` and `bin/claude-md-sentinel.py` are deliberately untouched. The first
+already refuses a bad token and the second already does `.strip().upper()` with a `VALID_TIER`
+check; both were read before being left alone, and weakening the first to accept lower case would
+have removed a guard that was working.
+
+### Evidence
+
+Ten arms, each running the pristine and the patched code over the same input with the code version
+as the only variable, in a temp directory so no live floor was touched:
+
+```
+old reader + floor 't3'     -> None      the defect
+new reader + floor 't3'     -> 'T3'      repair
+old/new reader + floor 'T3' -> 'T3'      no regression
+both readers + 'banana'     -> None      control: the guard still refuses
+slice: t3.md absent, T3.md present, control T9.md absent
+anchor: script rc=1 on 't3'; old caller says "not resolvable", new caller normalises and proceeds
+```
+
+`bin/publish-audit-combined.sh`: 7 PASS, 0 WARN, 0 FAIL.
+
 ## v1.25.0
 
 Sharpens **T3 item 12 clause (2)**, inherited by T4: the session performs the close-time push **itself** and verifies it at the remote. Handing the push to the operator as a closing instruction is stated explicitly as NOT discharging the obligation. Minor-class semver, one clause reworded in `methodology-content/T3.md` with its one-line summary in `methodology-content/T4.md` kept in step. No change to tier detection, the session-open cross-session audit, the eleven-element close, heartbeat cadence, the version-lockstep guard, or any audit pattern set.

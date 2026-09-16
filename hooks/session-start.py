@@ -329,8 +329,13 @@ def read_tier_floor(cwd: Path) -> Optional[str]:
         return None
     try:
         text = marker.read_text(encoding="utf-8").strip()
-        if re.fullmatch(r"T[0-4]", text):
-            return text
+        # v1.25.1: tolerate a lower-case token on READ and return the canonical
+        # form. A floor written `t3` used to fail this match and go silently dead
+        # for every future session of that project. Companion fix: commands/tier.md
+        # now normalises the argument before writing. find_tier_in_claude_md already
+        # reads its sentinel with IGNORECASE; these two now agree with it.
+        if re.fullmatch(r"T[0-4]", text, re.IGNORECASE):
+            return text.upper()
     except Exception:
         pass
     return None
@@ -348,8 +353,13 @@ def read_tier_floor_previous(cwd: Path) -> Optional[str]:
         return None
     try:
         text = marker.read_text(encoding="utf-8").strip()
-        if re.fullmatch(r"T[0-4]", text):
-            return text
+        # v1.25.1: tolerate a lower-case token on READ and return the canonical
+        # form. A floor written `t3` used to fail this match and go silently dead
+        # for every future session of that project. Companion fix: commands/tier.md
+        # now normalises the argument before writing. find_tier_in_claude_md already
+        # reads its sentinel with IGNORECASE; these two now agree with it.
+        if re.fullmatch(r"T[0-4]", text, re.IGNORECASE):
+            return text.upper()
     except Exception:
         pass
     return None

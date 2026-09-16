@@ -12,7 +12,9 @@ If `$ARGUMENTS` is empty:
 - Recall the tier you saw in the SessionStart `additionalContext` block at the start of this chat. Print the current display line in the canonical format: `Current tier: T<N> (S<x>/C<y>), <label>. Source: <auto|claude.md|claude-config|env|slash>.`
 - If the SessionStart trace is not in your context (the hook may not have fired), say so explicitly: `No methodology context loaded; the SessionStart hook may not have fired this session. Check ~/.claude/methodology-hook.log for diagnosis.`
 
-If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
+If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitively**: `t3` and `T3` are the same request):
+
+**Canonical token.** Every artefact this command writes (anchor `TIER=`, the tier-floor file, the CLAUDE.md sentinel) and every line it prints uses the UPPERCASE `T<N>` form, whatever case the operator typed. The shell blocks below derive `$TIER` for this; use that value, not the raw argument, in your prose too.
 
 1. Identify the current effective tier from your context (SessionStart trace, or any prior `/tier` / `/raise-tier` / `/lower-tier` overrides during this session).
 2. Compare `$ARGUMENTS` (target) to the current effective tier and compute direction:
@@ -24,20 +26,21 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
    [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
+   TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    if [ -x "$PLUGIN_BIN" ]; then
      PLUGIN_ROOT=$(dirname "$(dirname "$PLUGIN_BIN")")
-     SLICE="$PLUGIN_ROOT/methodology-content/$ARGUMENTS.md"
+     SLICE="$PLUGIN_ROOT/methodology-content/$TIER.md"
      if [ -r "$SLICE" ]; then
-       echo "Methodology slice for $ARGUMENTS resolved at: $SLICE"
+       echo "Methodology slice for $TIER resolved at: $SLICE"
        echo ""
-       echo "--- methodology slice $ARGUMENTS begin ---"
+       echo "--- methodology slice $TIER begin ---"
        cat "$SLICE"
-       echo "--- methodology slice $ARGUMENTS end ---"
+       echo "--- methodology slice $TIER end ---"
      else
-       echo "Methodology slice file for $ARGUMENTS not found at $PLUGIN_ROOT/methodology-content/; falling back to general familiarity with $ARGUMENTS prescriptions."
+       echo "Methodology slice file for $TIER not found at $PLUGIN_ROOT/methodology-content/; falling back to general familiarity with $TIER prescriptions."
      fi
    else
-     echo "Plugin root not resolvable; falling back to general familiarity with $ARGUMENTS prescriptions."
+     echo "Plugin root not resolvable; falling back to general familiarity with $TIER prescriptions."
    fi
    ```
    Then use the `Read` tool on the `$SLICE` path printed by the Bash block. The Bash block also emits the slice content inline between `--- methodology slice $ARGUMENTS begin ---` and `--- methodology slice $ARGUMENTS end ---` markers (v1.12.0 belt-and-braces; closes Issue #1 point 3) so the operator sees the slice rendered in the chat output without expanding the Read tool result. From this point on, the loaded slice is the authoritative rule set for the remainder of the session. If the Bash block printed a "fallback" message instead of the slice content, surface it to the operator inline (the elevation acknowledgement remains valid; only the slice-text load failed).
@@ -45,25 +48,33 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4`:
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
    [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
-   [ -x "$PLUGIN_BIN" ] && bash "$PLUGIN_BIN" "$ARGUMENTS" || echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
+   TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
+   if [ -x "$PLUGIN_BIN" ]; then
+     bash "$PLUGIN_BIN" "$TIER"; rc=$?
+     [ "$rc" -eq 0 ] || echo "anchor-rewrite.sh REFUSED tier '$TIER' (rc=$rc). That is a REFUSAL, not a resolution failure: the script was found and ran, and the heartbeat TIER is UNCHANGED. Do not report this as a missing plugin."
+   else
+     echo "anchor-rewrite.sh not resolvable in user-scope plugin install; manual heartbeat discipline applies."
+   fi
    ```
 7. **Set the project tier floor (always; v1.13.0 sticky-on-explicit).** Any `/tier T<N>` invocation now writes the floor (closes 1a). Run:
    ```bash
+   TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    PROJ_DIRNAME=$(python -c 'import os, re; print(re.sub(r"[^A-Za-z0-9-]", "-", os.path.realpath(os.getcwd())))')  # OBS-MET-AJ
    PROJ_DIR="$HOME/.claude/projects/$PROJ_DIRNAME"
    mkdir -p "$PROJ_DIR" 2>/dev/null
-   echo "$ARGUMENTS" > "$PROJ_DIR/methodology-tier-floor"
-   echo "Project tier floor set to $ARGUMENTS at $PROJ_DIR/methodology-tier-floor (sticky across all future sessions of this project)."
+   echo "$TIER" > "$PROJ_DIR/methodology-tier-floor"  # MUST be uppercase: read_tier_floor() is case-sensitive
+   echo "Project tier floor set to $TIER at $PROJ_DIR/methodology-tier-floor (sticky across all future sessions of this project)."
    ```
 8. **Write the `tier: T<N>` sentinel to project-root CLAUDE.md (always; v1.13.0 cross-machine portability).** Floor file is `~/.claude/projects/`-local cache; it does not git-sync. CLAUDE.md is git-committed, so the sentinel makes the override portable across all machines the project syncs to (closes 1b). Cross-platform helper at `bin/claude-md-sentinel.py` handles all six edit cases (insert into existing frontmatter, prepend new frontmatter, replace bare legacy `tier:` line, idempotent no-op, etc.):
    ```bash
    PLUGIN_BIN="$HOME/.claude/plugins/marketplaces/vibe-coding-rules/bin/anchor-rewrite.sh"
    [ -x "$PLUGIN_BIN" ] || PLUGIN_BIN=$(find "$HOME/.claude/plugins" -name anchor-rewrite.sh -path '*vc-roe*' -type f 2>/dev/null | sort -V | tail -1)
+   TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    if [ -x "$PLUGIN_BIN" ]; then
      PLUGIN_ROOT=$(dirname "$(dirname "$PLUGIN_BIN")")
      SENTINEL_HELPER="$PLUGIN_ROOT/bin/claude-md-sentinel.py"
      if [ -r "$SENTINEL_HELPER" ]; then
-       python "$SENTINEL_HELPER" "$ARGUMENTS"
+       python "$SENTINEL_HELPER" "$TIER"
      else
        echo "claude-md-sentinel.py not found at $SENTINEL_HELPER; CLAUDE.md sentinel NOT updated. Floor file written; in-session tier set; cross-machine portability not guaranteed."
      fi
