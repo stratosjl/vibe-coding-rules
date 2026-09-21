@@ -197,3 +197,10 @@ PRs welcome. Three things that make a PR easier to merge:
 ## Origin
 
 The plugin started as a private internal tool for managing scale-of-rigour mismatch across mixed personal + professional + regulated work. The public version is the abstracted methodology shape; operator-specific worked examples and reference instances live as a private add-on layer that joins with the public plugin at runtime.
+
+## Development proposals
+
+[Shared assurance controls](docs/proposals/shared-assurance-controls.md) proposes
+requirement-to-test links, independent boundary review, demonstrated restoration
+and revision-bound evidence across tiers and native adapters. It includes an
+implementation continuation brief; these changes are not yet active.
