@@ -209,7 +209,22 @@ def checker_tests() -> None:
     check(st.returncode == 0, f"self_test: --self-test exits 0 (rc {st.returncode})")
 
 
-TESTS = [contract_block_loads_and_is_complete, checker_tests]
+def slices_and_commands_name_only_contract_ids() -> None:
+    """The one document test: it catches a renamed or invented control ID."""
+    print("slices_and_commands_name_only_contract_ids")
+    blocks = contract_blocks(POLICY.read_text(encoding="utf-8"))
+    known = set(json.loads(blocks[0])["controls"]) if blocks else set()
+    files = {f"methodology-content/{t}.md": t in ("T3", "T4") for t in ("T1", "T2", "T3", "T4")}
+    files.update({"commands/audit-pass.md": True, "commands-kimi/audit-pass.md": True})
+    for rel, must_name in files.items():
+        ids = set(re.findall(r"\bAC-[A-Z]+\b", (ROOT / rel).read_text(encoding="utf-8")))
+        if must_name:
+            check(bool(ids), f"{rel} names at least one control")
+        check(ids <= known, f"{rel} names only contract IDs ({sorted(ids - known)})")
+
+
+TESTS = [contract_block_loads_and_is_complete, checker_tests,
+         slices_and_commands_name_only_contract_ids]
 
 
 def main() -> int:
