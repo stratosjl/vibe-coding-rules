@@ -10,7 +10,7 @@
 # Closes F-61-02 forward obligation (combined-audit harness) per the
 # T3 item 11 deferral closure-date discipline rule (v1.7.0): closure
 # trigger active until shipped before v1.6.0 soak completes or next
-# push to origin/main, whichever earlier.
+# push to github/main, whichever earlier.
 #
 # Seven wrapped tools:
 #   1. publish-audit.sh             operator-pattern, working-tree scope
@@ -45,7 +45,7 @@
 #            because they are tools that did not run rather than tools that
 #            ran noisily. The status is kept for a genuine known-noise case.
 #
-# Exit codes, the contract in methodology-content/T2.md (added v1.24.0):
+# Exit codes, the contract in methodology-content/T2.md (added v1.27.0):
 #   0 - every tool ran and none reported a defect; safe to push
 #   1 - one or more tools reported a leak / regression; push blocked
 #   2 - usage error: the CALLER is wrong (unknown argument)
@@ -179,7 +179,7 @@ warn_n=$(printf '%s\n' "$out" | grep -E '^\[publish-audit\][[:space:]]+warn hits
 if [ "$rc" -eq 0 ]; then
   record "publish-audit" PASS "deny=${deny_n:-0} warn=${warn_n:-0}"
 elif [ "$rc" -eq 3 ]; then
-  # bin/publish-audit.sh gained the NOT-RUNNABLE exit 3 in v1.25.0 (not inside a
+  # bin/publish-audit.sh gained the NOT-RUNNABLE exit 3 in v1.27.0 (not inside a
   # git work tree, or `git grep` itself could not run). Without this arm that
   # lands here as FAIL, which is the exact defect this release exists to close:
   # a scan that never happened rendered as a scan that found something. NOTRUN
@@ -201,8 +201,8 @@ elif [ "$rc" -eq 3 ]; then
   # The harness half of a two-file change, and BOTH halves are now in. This
   # comment used to say bin/publish-audit-state.sh "does NOT emit 3 today",
   # which was true when the arm was written and false by the time the release
-  # shipped: that script gained exit 3 for a failed `git clone` in v1.25.0.
-  # Measured on a clone whose origin does not resolve: it exits 3 with
+  # shipped: that script gained exit 3 for a failed `git clone` in v1.27.0.
+  # Measured on a clone whose remote does not resolve: it exits 3 with
   # "NOT-RUNNABLE: git clone ... exited 128", and this arm renders it NOTRUN
   # rather than as a finding about HEAD.
   summary=$(printf '%s\n' "$out" | tail -1)
@@ -212,7 +212,7 @@ else
   # publish-audit-state.sh does not check its `git clone` (it runs under
   # `set -uo pipefail`, with no -e) and reports an unreachable remote through
   # the same exit 1 as a real leak. Measured 2026-09-04 on this repo, whose
-  # origin does not resolve: rc=1, "cannot self-audit", rendered here as
+  # remote does not resolve: rc=1, "cannot self-audit", rendered here as
   # "HEAD has DENY hits". Reporting that tool's own last line keeps the two
   # causes distinguishable. The row stays FAIL either way, so the gate still
   # fails closed when the published state could not be audited at all.

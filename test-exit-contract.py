@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exit-contract guard (F-EXIT-01, v1.24.0).
+"""Exit-contract guard (F-EXIT-01, v1.27.0).
 
 WHY THIS EXISTS
 ---------------
@@ -20,7 +20,7 @@ regression floor would report a failing DOCUMENT and send the reader to
 investigate the document. The guard's disappearance is indistinguishable from
 the guard firing.
 
-vc-roe had the same defect in three places of its own, all fixed at v1.24.0:
+vc-roe had the same defect in three places of its own, all fixed at v1.27.0:
 
   - `bin/anchor-rewrite.sh` exited 0 when no session anchor resolved. Its own
     header said so. A caller running `anchor-rewrite.sh T4 && echo ok` reported
@@ -273,8 +273,8 @@ COMMAND_FILES = [
     "commands-kimi/tier.md", "commands-kimi/raise-tier.md", "commands-kimi/lower-tier.md",
 ]
 FENCE = re.compile(r"^   ```bash\n((?:.*?\n)*?)   ```\n", re.M)
-RESOLVER_BEGIN = "# --- vc-roe resolver v1.24.0 BEGIN"
-RESOLVER_END = "# --- vc-roe resolver v1.24.0 END"
+RESOLVER_BEGIN = "# --- vc-roe resolver v1.27.0 BEGIN"
+RESOLVER_END = "# --- vc-roe resolver v1.27.0 END"
 
 
 def _blocks(rel: str):
@@ -445,11 +445,11 @@ def arm_hygiene() -> None:
 
     # Positive control. Without it a zero is indistinguishable from a matcher
     # that cannot match anything.
-    ctl = OUTSIDE.search(r'sys.path.insert(0, r"C:\Users\x\AppData\Local\Temp\claude\p\s")')
+    ctl = OUTSIDE.search(r'sys.path.insert(0, r"C:\Users\x\AppData\Local\Temp\claude\p\s")')  # vc-roe:runtime-state: planted control fixture
     check("hygiene matcher fires on a planted violation (positive control)", bool(ctl))
     # And a negative control: the exemption marker must actually suppress.
     check("exemption marker suppresses a real hit (negative control)",
-          EXEMPT in "x = '/home/op/y'  # " + EXEMPT)
+          EXEMPT in "x = '/home/op/y'  # " + EXEMPT)  # vc-roe:runtime-state: planted control fixture
     check("no executable file hard-codes an out-of-repo absolute path",
           not hits, f"{len(hits)} hit(s): " + ", ".join(hits[:6]))
     print(f"       denominator: {scanned} .py/.sh of {len(tracked)} tracked "
@@ -464,9 +464,14 @@ def arm_hygiene() -> None:
             continue
         text = (REPO_ROOT / rel).read_text(encoding="utf-8")
         lines = text.splitlines()
+        # Same scope as the path check above: code lines only, so a docstring
+        # quoting the defect it guards against is not counted as the defect.
+        code_lines = {i for i, _ in _executable_code_lines(rel, text)}
         for m in re.finditer(r"^\s*sys\.path\.(insert|append)\((.*)$", text, re.M):
             arg = m.group(2)
             lineno = text[:m.start()].count("\n") + 1
+            if lineno not in code_lines:
+                continue
             if any(tok in arg for tok in ("__file__", "REPO_ROOT", "PLUGIN_ROOT")):
                 continue
             window = "\n".join(lines[max(0, lineno - 8):lineno])

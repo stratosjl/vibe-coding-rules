@@ -8,14 +8,14 @@
 # bin/publish-audit.sh) so the two audits cannot drift apart.
 #
 # Usage:
-#   bash bin/publish-audit-state.sh                     # scan origin/main HEAD
+#   bash bin/publish-audit-state.sh                     # scan github/main HEAD
 #   bash bin/publish-audit-state.sh --history           # walk every commit on main
 #   bash bin/publish-audit-state.sh --json-out FILE     # HEAD + history; write JSON to FILE
 #
 # Exits non-zero on any DENY hit. Optional --history walk treats every
 # historical leak the same way as a current-HEAD leak.
 #
-# Exit codes (v1.24.0 contract, methodology-content/T2.md):
+# Exit codes (v1.27.0 contract, methodology-content/T2.md):
 #   0  ran and clean
 #   1  ran and found a defect (DENY hits at public HEAD or in history)
 #   2  usage error: the CALLER is wrong (unknown argument)
@@ -65,10 +65,11 @@ if [ ! -r "$PUBLISH_AUDIT" ]; then
   notrunnable "cannot find $PUBLISH_AUDIT; nothing was audited"
 fi
 
-# Resolve the published remote URL, BY CONVENTION rather than by the name
-# `origin`. Remotes here are named for what they are: `gitea` for the
-# self-hosted forge, `github` for GitHub. `origin` is the un-migrated legacy
-# name and is tried last rather than first.
+# Resolve the published remote URL by NAME. This repository is published on
+# GitHub and its remote is named `github`, so that is tried first. `origin`,
+# git's default name, is a fallback for clones that were never renamed. A
+# private forge remote is deliberately not tried: this audit checks the PUBLIC
+# state, and an anonymous HTTPS clone of a private forge cannot succeed.
 #
 # This used to read remote.origin.url and nothing else. On a repo following
 # the convention that returns empty, and the empty value fell straight through
@@ -82,7 +83,7 @@ fi
 # agent. Push-time auth (SSH) is unrelated to audit-time auth (HTTPS).
 REMOTE_URL_RAW=""
 REMOTE_NAME=""
-for _candidate in gitea github origin; do
+for _candidate in github origin; do
   REMOTE_URL_RAW="$(git -C "$REPO_ROOT" config --get "remote.${_candidate}.url" 2>/dev/null || echo '')"
   if [ -n "$REMOTE_URL_RAW" ]; then
     REMOTE_NAME="$_candidate"
@@ -157,8 +158,8 @@ fail() { color '31' "[publish-audit-state] "; printf '%s\n' "$*"; exit 1; }
 # defect", so a cannot-run rendered as a finding ABOUT THE PUBLIC REPO'S
 # CONTENT when nothing had been cloned and nothing had been scanned.
 #
-# Firing rather than latent: this clone's own origin does not resolve, and
-# .githooks/pre-push runs the harness that invokes this script on every push.
+# Firing rather than latent: on 2026-09-04 this clone's then `origin` remote
+# did not resolve, and .githooks/pre-push runs the harness that invokes this script on every push.
 #
 # The clone's stderr is kept and replayed, because it carries the only
 # statement of the actual cause and the harness discards it in hook mode.

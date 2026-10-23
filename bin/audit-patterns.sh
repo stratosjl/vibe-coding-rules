@@ -93,7 +93,7 @@ SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-
 # This branch used to be silent. A run with the overlay loaded and a run
 # without it left byte-identical variables behind, so no consumer could
 # tell a fully armed scan from the public subset: measured on the
-# operator machine at v1.24.0, DENY_PATTERNS is 9 entries with the
+# operator machine at v1.27.0, DENY_PATTERNS is 9 entries with the
 # overlay and 2 without it, and nothing said which had been loaded. The
 # outcome is now published as data alongside the arrays.
 #

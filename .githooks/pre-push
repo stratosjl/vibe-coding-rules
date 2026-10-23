@@ -19,7 +19,7 @@
 #
 # This paragraph used to say that a WARN row meant a tool had NOT run and
 # that such a result did not block. That was true of the harness before
-# v1.25.0 and is now the opposite of its policy: WARN means a tool RAN and
+# v1.27.0 and is now the opposite of its policy: WARN means a tool RAN and
 # reported known-noise, no tool currently emits it, and a tool that did not
 # run is NOTRUN, which exits 3 and blocks. So a zero exit here does mean
 # every tool ran and none reported a defect.
@@ -209,7 +209,7 @@ elif [ "$audit_rc" -eq 3 ]; then
   echo "vc-roe pre-push: combined-audit INCOMPLETE (rc=3). Push BLOCKED." >&2
   echo "One or more tools could not run, so nothing above says the tree is clean." >&2
   echo "The harness itself worked. Each NOTRUN row above names what could not run and why:" >&2
-  echo "a missing tool to install, or a dependency such as the origin remote to repair." >&2
+  echo "a missing tool to install, or a dependency such as the github remote to repair." >&2
   exit 1
 elif [ "$audit_rc" -ne 0 ]; then
   echo "" >&2

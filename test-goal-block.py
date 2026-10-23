@@ -43,7 +43,7 @@ def prompt_with(goal_body: str | None, extra_goal_section: bool = False) -> str:
     parts = [
         "# Session 7 opening prompt\n",
         "## Read order\n\n1. CLAUDE.md\n",
-        "## Pre-next-chat verification\n\n1. Run `git status -sb`; expect `## main...origin/main`.\n",
+        "## Pre-next-chat verification\n\n1. Run `git status -sb`; expect `## main...github/main`.\n",
     ]
     if goal_body is not None:
         parts.append("## Goal\n\n```\n" + goal_body + "\n```\n")

@@ -29,7 +29,7 @@ USER_CMD_DIR="$HOME/.claude/commands"
 
 # Resolve the installed bundle.
 #
-# v1.24.0 removes a dead branch: CACHE_BASE_VCROE and CACHE_BASE_LEGACY were
+# v1.27.0 removes a dead branch: CACHE_BASE_VCROE and CACHE_BASE_LEGACY were
 # byte-identical strings, because the v1.0.0 rename rewrote both sides of the
 # pair. The elif could never be taken and the error message named the same path
 # twice, which reads to whoever hits it as though two locations were searched.

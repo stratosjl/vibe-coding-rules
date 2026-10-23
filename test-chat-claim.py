@@ -28,7 +28,7 @@ file path is fully synthetic.
 
 Pure stdlib. Cleans up its tempdirs on exit.
 
-Exit codes, per the F-EXIT-01 contract adopted at v1.24.0:
+Exit codes, per the F-EXIT-01 contract adopted at v1.27.0:
 
     0  every case ran and every assertion held
     1  a case ran and an assertion failed
@@ -36,7 +36,7 @@ Exit codes, per the F-EXIT-01 contract adopted at v1.24.0:
     3  NOT-RUNNABLE: at least one case could not run on this platform
 
 A skipped case is COUNTED and named, in the summary line and in the exit
-code, because until v1.24.0 it was neither: a run that skipped a case
+code, because until v1.27.0 it was neither: a run that skipped a case
 was indistinguishable from a run where every case executed, and
 CHANGELOG.md quotes such a green as a coverage claim on the very
 platform where the boot_id case skips. Pass --allow-skips to accept a
@@ -117,7 +117,7 @@ def read_my_starttime() -> Optional[str]:
     (macOS and anything else), and a case that names the starttime
     comparison must then SKIP rather than run.
 
-    Until v1.24.0 this was a Linux-only /proc reader, so on the Windows node
+    Until v1.27.0 this was a Linux-only /proc reader, so on the Windows node
     every v1.9.0 fixture wrote pid_starttime: null, and evaluate_claim took
     its is_pid_alive fallback instead of the starttime comparison the cases
     are named for (both arms live in evaluate_claim's Layer 1 probe).
@@ -248,7 +248,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def skip(case: str, why: str) -> None:
     """Record a case that could not run on this platform.
 
-    A bare print was the whole mechanism until v1.24.0, and a bare print
+    A bare print was the whole mechanism until v1.27.0, and a bare print
     moves neither tally, so the summary line and the exit code rendered a
     skipped run exactly as they render a complete one. This feeds both.
     """
@@ -490,7 +490,7 @@ def case_alive_pid_within_ttl_refuses(home: Path, tmp: Path) -> None:
         if starttime_probe_is_expected():
             # read_pid_starttime implements a probe on both of these, so a
             # None here is a broken harness, not an absent capability, and
-            # it stays a loud FAIL as it was before v1.24.0.
+            # it stays a loud FAIL as it was before v1.27.0.
             check("read_my_starttime returned non-None where the hook probes",
                   False, f"harness regression on {sys.platform}")
             return
@@ -781,7 +781,7 @@ def case_reader_coexist_no_overwrite(home: Path, tmp: Path) -> None:
     my_st = read_my_starttime()
     if my_st is None and starttime_probe_is_expected():
         # The same harness-health guard as the Layer 1 case above. It read
-        # "on Linux" until v1.24.0 while the hook had probed win32 since
+        # "on Linux" until v1.27.0 while the hook had probed win32 since
         # v1.9.0, so on the Windows node it could not fire. No skip arm
         # here: this case is named for reader-coexist, not for the
         # starttime comparison, and it reaches that verdict on the

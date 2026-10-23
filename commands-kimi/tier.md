@@ -27,8 +27,8 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    VC_ROE_SEARCH="$HOME/.kimi-code/plugins"
    VC_ROE_KNOWN="$HOME/.kimi-code/plugins/managed/vc-roe"
-   # --- vc-roe resolver v1.24.0 BEGIN (byte-identical in every command file;
-   # --- test-command-lockstep.py fails the build if a copy drifts). Resolves the
+   # --- vc-roe resolver v1.27.0 BEGIN (byte-identical in every command file;
+   # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
@@ -61,7 +61,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    echo "vc-roe root: $VC_ROE_ROOT"
    echo "resolved via: $VC_ROE_VIA"
    grep -o '"version"[^,]*' "$VC_ROE_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1
-   # --- vc-roe resolver v1.24.0 END
+   # --- vc-roe resolver v1.27.0 END
    SLICE="$VC_ROE_ROOT/methodology-content/$TIER.md"
    if [ ! -r "$SLICE" ]; then
      echo "NOT-RUNNABLE: the $TIER methodology slice is missing at $SLICE."
@@ -80,8 +80,8 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    VC_ROE_SEARCH="$HOME/.kimi-code/plugins"
    VC_ROE_KNOWN="$HOME/.kimi-code/plugins/managed/vc-roe"
-   # --- vc-roe resolver v1.24.0 BEGIN (byte-identical in every command file;
-   # --- test-command-lockstep.py fails the build if a copy drifts). Resolves the
+   # --- vc-roe resolver v1.27.0 BEGIN (byte-identical in every command file;
+   # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
@@ -114,7 +114,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    echo "vc-roe root: $VC_ROE_ROOT"
    echo "resolved via: $VC_ROE_VIA"
    grep -o '"version"[^,]*' "$VC_ROE_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1
-   # --- vc-roe resolver v1.24.0 END
+   # --- vc-roe resolver v1.27.0 END
    bash "$VC_ROE_ROOT/bin/anchor-rewrite.sh" "$TIER"; rc=$?
    case "$rc" in
      0) echo "anchor: TIER set to $TIER." ;;
@@ -138,8 +138,8 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    TIER=$(printf '%s' "$ARGUMENTS" | tr '[:lower:]' '[:upper:]')  # canonical token: /tier t3 and /tier T3 are one request
    VC_ROE_SEARCH="$HOME/.kimi-code/plugins"
    VC_ROE_KNOWN="$HOME/.kimi-code/plugins/managed/vc-roe"
-   # --- vc-roe resolver v1.24.0 BEGIN (byte-identical in every command file;
-   # --- test-command-lockstep.py fails the build if a copy drifts). Resolves the
+   # --- vc-roe resolver v1.27.0 BEGIN (byte-identical in every command file;
+   # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
@@ -172,7 +172,7 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    echo "vc-roe root: $VC_ROE_ROOT"
    echo "resolved via: $VC_ROE_VIA"
    grep -o '"version"[^,]*' "$VC_ROE_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1
-   # --- vc-roe resolver v1.24.0 END
+   # --- vc-roe resolver v1.27.0 END
    H="$VC_ROE_ROOT/bin/claude-md-sentinel.py"
    if [ ! -r "$H" ]; then
      echo "NOT-RUNNABLE: claude-md-sentinel.py is missing at $H."

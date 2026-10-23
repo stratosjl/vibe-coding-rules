@@ -23,7 +23,7 @@ plus the real side effect on `core.hooksPath`:
 Cross-platform: pure stdlib, sys.executable (never the broken `python3` alias
 on Windows per the user-global CLAUDE.md rule). Requires git on PATH.
 
-EXIT CONTRACT (F-EXIT-01, v1.24.0). Codes that already discriminate are not
+EXIT CONTRACT (F-EXIT-01, v1.27.0). Codes that already discriminate are not
 renumbered; 3 is added here because a collision existed:
 
     0  ran, and every case passed

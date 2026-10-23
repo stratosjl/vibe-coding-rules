@@ -45,7 +45,7 @@ Exit codes:
     2   usage error raised by argparse (unknown flag or choice, missing argument)
     3   NOT-RUNNABLE: the environment is wrong, e.g. CLAUDE.md cannot be written
 
-    3 is new at v1.25.0 and dissolves a real collision. The write failure used
+    3 is new at v1.27.0 and dissolves a real collision. The write failure used
     to return 2, which argparse had always been returning for a usage error, so
     a caller seeing 2 could not tell "you passed a bad flag" from "your
     CLAUDE.md is locked or read-only". See methodology-content/T2.md item 2.

@@ -24,17 +24,17 @@ vc-roe ships a version-controlled pre-push hook at `.githooks/pre-push` that run
 bash bin/install-hooks.sh
 ```
 
-The bootstrap sets `git config --local core.hooksPath .githooks`. It is idempotent — safe to re-run. After install, every `git push` from this clone runs the combined-audit harness (seven tools: `publish-audit.sh`, `publish-audit-state.sh`, `gitleaks` HEAD + history, `test-audit-patterns.py`, inline credential heuristics, `test-version-lockstep.py`) and blocks on any FAIL. Since v1.25.0 it also blocks when any tool could NOT RUN: a missing `gitleaks` is recorded NOTRUN and the harness exits 3, because an audit that did not happen is not an audit that found nothing. WARN is reserved for a tool that ran and reported known-noise, and no tool currently emits it.
+The bootstrap sets `git config --local core.hooksPath .githooks`. It is idempotent — safe to re-run. After install, every `git push` from this clone runs the combined-audit harness (seven tools: `publish-audit.sh`, `publish-audit-state.sh`, `gitleaks` HEAD + history, `test-audit-patterns.py`, inline credential heuristics, `test-version-lockstep.py`) and blocks on any FAIL. Since v1.27.0 it also blocks when any tool could NOT RUN: a missing `gitleaks` is recorded NOTRUN and the harness exits 3, because an audit that did not happen is not an audit that found nothing. WARN is reserved for a tool that ran and reported known-noise, and no tool currently emits it.
 
 **Keep cannot-run distinguishable from pass.** Each tool exits 0 for "scanned,
 found nothing" and the harness records that as PASS, so a tool that ALSO returns
 0 when it could not scan turns a leak into a green push. Measured 2026-09-04 on
-`bin/publish-audit.sh` as it stood BEFORE v1.25.0, when its DENY and WARN
+`bin/publish-audit.sh` as it stood BEFORE v1.27.0, when its DENY and WARN
 scans all routed through one `git grep` with stderr discarded: with one of the
 scaffold's own two private-network DENY patterns (see `bin/audit-patterns.sh`)
 planted in a tracked file it exited 1 and aborted in a healthy repo, and exited
 0 with a clean summary both when `.git` was absent and when `git` was off
-`PATH`. v1.25.0 closed that: the scan now keeps git's exit code and its stderr,
+`PATH`. v1.27.0 closed that: the scan now keeps git's exit code and its stderr,
 and reports NOT-RUNNABLE with exit 3 rather than a confident zero. If you
 touch a gate tool, give its cannot-run paths the exit-code contract's 3
 (NOT-RUNNABLE) and add the negative arm proving that code fires, rather than
@@ -62,7 +62,7 @@ four `.githooks/` carries: `pre-push`, `post-commit`, `post-merge`,
 equivalent; `.githooks/pre-push` deliberately replaces yours. Every OTHER
 operator-local hook stops firing, silently. Git says nothing, and
 `bin/install-hooks.sh` surfaces a shadowed `.git/hooks/pre-push` and, since
-v1.25.0, also lists every other local hook that `.githooks/` does not carry, so a
+v1.27.0, also lists every other local hook that `.githooks/` does not carry, so a
 shadowed `pre-commit` is now named rather than left to be discovered. Measured
 2026-09-04 with a local `pre-commit` and a local `post-commit` in one clone:
 before the bootstrap both fire, after it only `post-commit` does, through its
@@ -128,8 +128,8 @@ on the released commit and push it:
 
 ```sh
 git tag -a v1.25.0 <sha> -m "v1.25.0: <one line>"
-git push origin v1.25.0
-git ls-remote --tags origin | grep v1.25.0   # verify at the remote, not locally
+git push github v1.25.0
+git ls-remote --tags github | grep v1.25.0   # verify at the remote, not locally
 ```
 
 **This is load-bearing rather than tidy.** The fleet's pinned-plugin config

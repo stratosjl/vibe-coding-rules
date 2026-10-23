@@ -5,21 +5,21 @@
 #        anchor-rewrite.sh --resolve-only        # print the anchor path + layer, mutate nothing
 #   <NEW_TIER>  one of T0, T1, T2, T3, T4
 #
-# EXIT CONTRACT (v1.24.0, F-EXIT-01). A check's CANNOT-RUN must never render
+# EXIT CONTRACT (v1.27.0, F-EXIT-01). A check's CANNOT-RUN must never render
 # identically to its ran-and-succeeded or ran-and-found-a-defect result:
 #   0  ran, anchor resolved, TIER rewritten (or --resolve-only succeeded)
 #   2  USAGE error: the caller passed a bad argument
 #   3  NOT-RUNNABLE: no session anchor resolved, so heartbeat enforcement is
 #      NOT in force. Nothing was written and nothing is known about the tier.
 #
-# ⚠ Until v1.24.0 this script exited 0 when no anchor resolved, printing a
+# ⚠ Until v1.27.0 this script exited 0 when no anchor resolved, printing a
 # diagnostic nobody was obliged to read. A caller doing `bash anchor-rewrite.sh
 # T4 && echo ok` therefore reported success while the heartbeat anchor was never
 # touched and the UserPromptSubmit hook went on short-circuiting at the old
 # tier. That is CANNOT-RUN folded into PASS on an enforcement primitive.
 #
 # Resolves the anchor file in three layers:
-#   Layer 0 (primary, v1.24.0): $CLAUDE_CODE_SESSION_ID, exported by Claude Code
+#   Layer 0 (primary, v1.27.0): $CLAUDE_CODE_SESSION_ID, exported by Claude Code
 #     into the environment of a slash command's Bash block. Per-process, so no
 #     other window can clobber it, which dissolves the cross-process marker race
 #     the header below used to record as an accepted residual.
@@ -125,7 +125,7 @@ anchor_for() {
 ANCHOR=""
 LAYER=""
 
-# -- Layer 0 (v1.24.0): the harness-exported session id, per-process, no race --
+# -- Layer 0 (v1.27.0): the harness-exported session id, per-process, no race --
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     ANCHOR="$(anchor_for "$CLAUDE_CODE_SESSION_ID")"
     [ -n "$ANCHOR" ] && LAYER="env-session-id"

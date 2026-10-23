@@ -95,7 +95,7 @@ def _resolve_plugin_root() -> Path:
 PLUGIN_ROOT = _resolve_plugin_root()
 
 # The env root and this file's own root can be two DIFFERENT bundles, and until
-# v1.25.0 nothing said so. _resolve_plugin_root() accepts any CLAUDE_PLUGIN_ROOT
+# v1.27.0 nothing said so. _resolve_plugin_root() accepts any CLAUDE_PLUGIN_ROOT
 # that merely looks like a bundle, so a sibling or a stale vc-roe in the plugin
 # cache passes that test. Measured 2026-09-04: with the env var aimed at such a
 # root, the slice served to the assistant came from there while routine_version
@@ -326,7 +326,7 @@ def score_scope(project_root: Path, rules: dict[str, Any]) -> tuple[str, list[st
 def match_regulatory_keywords(text: str, keywords: list[str]) -> list[str]:
     """Keywords present in `text` as WHOLE WORDS, each token counted once.
 
-    Until v1.25.0 this was `kw.upper() in text.upper()`, an unanchored substring
+    Until v1.27.0 this was `kw.upper() in text.upper()`, an unanchored substring
     test, and the shipped keyword list carries three-letter entries that sit
     inside ordinary English. Measured 2026-09-04 against the shipped
     detection-rules.json: "This repo has a compliance section." scored TWO hits
@@ -677,13 +677,13 @@ def _describe_addon_module(module: Any) -> str:
 def emit_not_runnable(phase: str, path: Any, reason: str) -> int:
     """Emit a LOUD not-runnable context instead of returning silently.
 
-    Until v1.25.0 a stdin_parse(), load_rules() or detect_tier() failure hit
+    Until v1.27.0 a stdin_parse(), load_rules() or detect_tier() failure hit
     `return 0` having written NOTHING at all. Measured 2026-09-04,
     detection-rules.json both corrupt and absent: rc=0, 0 bytes of stdout, 0
     bytes of stderr, against a healthy control of 3472 bytes. The session then
     ran with NO methodology and no surface anywhere said so, which is the same
     cannot-run-rendered-as-pass that load_slice() was given a banner for in
-    v1.24.0, one layer further out.
+    v1.27.0, one layer further out.
 
     The exit code stays 0 deliberately, and this is the one place that decision
     is worth stating. README:141 and this module's own docstring both make
@@ -736,7 +736,7 @@ def load_slice(tier: str) -> str:
     """Return the slice text, or a LOUD not-runnable banner.
 
     This return value is injected verbatim into the SessionStart context as the
-    session's rule set. Until v1.24.0 the failure case returned a single comment
+    session's rule set. Until v1.27.0 the failure case returned a single comment
     line, `# Methodology slice for T4 not found at ...`, which sat under a header
     reading "Methodology in force: T4". A session opened that way carries the T4
     first-line rule on every reply while holding none of T4's obligations, and
@@ -1023,7 +1023,7 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
     `bin/install-hooks.sh`. Those are ordinary filenames, so that is a
     heuristic for "this is the vibe-coding-rules clone" and NOT an identity
     check; a repo of anyone's that happens to carry both matches it. Measured
-    2026-09-04: a throwaway repo with no origin remote and no `.claude-plugin/`
+    2026-09-04: a throwaway repo with no git remote and no `.claude-plugin/`
     matched. The consequence is bounded by the foreign-hookspath arm below,
     which refuses to overwrite a value someone else set; what remains is that
     an UNSET core.hooksPath in such a repo is still written. For any project
@@ -1323,7 +1323,7 @@ def format_publish_state(state: Optional[dict[str, Any]], now: int) -> str:
 
 
 def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str) -> None:
-    """Heartbeat-enforcement anchor (D-MET-39, v0.1.7; PLUGIN_ROOT added v1.24.0).
+    """Heartbeat-enforcement anchor (D-MET-39, v0.1.7; PLUGIN_ROOT added v1.27.0).
 
     Writes <tempdir>/claude-methodology-anchor-<session_id> with T0,
     LAST_HEARTBEAT, TIER, PLUGIN_ROOT and PLUGIN_VERSION on first SessionStart
@@ -1331,7 +1331,7 @@ def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str)
     its T0, LAST_HEARTBEAT and TIER, so wall-clock stays anchored to the
     original session-open epoch and a mid-session /tier override is not undone.
 
-    PLUGIN_ROOT (v1.24.0, F-ROOT-01) is the load-bearing addition. The harness
+    PLUGIN_ROOT (v1.27.0, F-ROOT-01) is the load-bearing addition. The harness
     passes this hook its own plugin root via CLAUDE_PLUGIN_ROOT; a slash
     command's Bash block CANNOT see that variable (measured 2026-09-04: `env`
     from a command block lists CLAUDE_CODE_* and no CLAUDE_PLUGIN_ROOT), so
@@ -1501,10 +1501,11 @@ def main() -> int:
                 # leaves the stdlib and site-packages earlier in the search order
                 # while still resolving the addon and the siblings it imports
                 # alongside itself, which spec_from_file_location would not.
+                # vc-roe:runtime-state: the addon seam, explained above.
                 sys.path.append(str(_addon_dir))
             from vc_roe_local_addons import session_start_block  # type: ignore
             # F027 attribution. The addon's block is spliced verbatim into the
-            # governed additionalContext, and until v1.25.0 the ONLY record of it
+            # governed additionalContext, and until v1.27.0 the ONLY record of it
             # was the one-word state token -- which the addon RETURNS, so the
             # 'three distinguishable states' defence rested on the addon behaving.
             # These two facts are taken BY THE HOOK from the imported module, so

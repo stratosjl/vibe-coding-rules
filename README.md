@@ -9,7 +9,7 @@ Claude Code's default behavior is the same regardless of whether you're hacking 
 vc-roe scores every project on two dimensions:
 
 - **Scope (S0..S3)** — ad-hoc / lightweight task / small project / serious project. From file-presence signals: `decisions.md`, `handovers/`, `BUILD_LOG.md`, `openapi.yaml`, etc.
-- **Criticality (C0..C2)** — personal / professional / regulatory. From a regulatory-keyword scan of `CLAUDE.md`, `AGENTS.md`, `README.md` and `docs/README.md` (DORA, MiFID, AIFMD, GDPR, AML, etc.) and path signals (`compliance/`, `regulatory/`, `dpia/`). One keyword hit is C1; two hits, or any one of those three paths, is C2. Hits are distinct keywords, not occurrences, and since v1.25.0 each is matched case-insensitively on whole words rather than as a substring, so `LIA` inside `compliance` no longer scores: a project whose README says `compliance` once reaches C1, not C2.
+- **Criticality (C0..C2)** — personal / professional / regulatory. From a regulatory-keyword scan of `CLAUDE.md`, `AGENTS.md`, `README.md` and `docs/README.md` (DORA, MiFID, AIFMD, GDPR, AML, etc.) and path signals (`compliance/`, `regulatory/`, `dpia/`). One keyword hit is C1; two hits, or any one of those three paths, is C2. Hits are distinct keywords, not occurrences, and since v1.27.0 each is matched case-insensitively on whole words rather than as a substring, so `LIA` inside `compliance` no longer scores: a project whose README says `compliance` once reaches C1, not C2.
 
 The (S, C) → T mapping yields one of five tiers. The matching slice from `methodology-content/T<N>.md` is injected as `additionalContext`, so Claude knows exactly what discipline level applies before the first user message.
 

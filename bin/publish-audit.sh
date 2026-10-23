@@ -18,7 +18,7 @@
 #   bash bin/publish-audit.sh                  # scan from repo root
 #   bash bin/publish-audit.sh --strict          # exit non-zero on any hit
 #
-# Exit codes (v1.24.0 contract):
+# Exit codes (v1.27.0 contract):
 #   0  ran and clean
 #   1  ran and found a defect (deny hits, or warn hits under --strict)
 #   2  usage error (unknown argument, or the pattern file is unreadable)
