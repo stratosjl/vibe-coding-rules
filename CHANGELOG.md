@@ -4,6 +4,22 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.28.0
+
+Minor. The tier slice now reaches the model in full at SessionStart. Claude Code saves a hook output over about 10,000 characters to a file and shows the model a 2 KB preview, per hook (measured 2026-10-23: 9,000 and 9,900 characters arrived inline in one session, 10,100 and 12,000 were saved to file). The T2, T3 and T4 slices are 14,548, 11,452 and 16,023 bytes, so sessions at those tiers saw the start of the slice and a path. Reported by vc-roe-private as OBS-S92-01, which counted 199 saved public outputs on one node.
+
+### What changed
+
+- **`hooks/hooks.json`.** SessionStart runs `session-start.py --split` plus `--slice-part 1` to `3`, as four entries, keeping v1.27.0's quoted plugin path.
+- **`hooks/session-start.py`.** `--split` keeps every side effect and emits the trace and add-on block without the slice, naming the part count and the slice path; `--slice-part K` emits part K only and writes nothing. The tier-floor logic moved into `resolve_effective_tier(persist=...)` so both modes reach the same tier. `split_slice()` cuts at blank lines where it can, at most 9,000 UTF-8 bytes per part. With no argument the hook behaves as before, which the Kimi adapter relies on. On v1.27.0's early failures (stdin, detection rules, tier detection) only the `--split` entry prints the not-runnable banner; the part entries print nothing, so one failure gives one banner. The trace gains `slice_delivery`.
+- **README** gains "How the slice reaches the model".
+
+### Evidence
+
+- `test-session-start-split.py` (new), 68 arms run as real processes: for T0 to T4, every part's output is under 9,500 characters and bytes, parts rejoin to the slice exactly and are labelled, the `--split` block carries no slice text and names the parts and path, and the default output still carries the whole slice; part hooks write no floor, claim or anchor while `--split` does (positive control); `hooks.json` wiring; `split_slice` on synthetic input (over-long line, no blank lines, Greek, empty); a slice needing more than three parts is announced; on a stdin failure only `--split` prints. Negative tests: a 9,000 to 12,000 byte budget fails the size arms for T2, T3 and T4, dropping one part entry fails the wiring arm, and letting the parts print the failure banner fails the single-banner arm.
+- End to end, a headless Claude Code session with these hooks at T4: both parts arrived inline, no hook output was saved to file, and the end and middle of the T4 slice were in the transcript.
+- All twelve suites pass.
+
 ## v1.27.0
 
 Minor. Two new mandatory rules, the repairs from an 84-finding review of the plugin, native Codex continuation checks, and a publish-audit fix for remotes not named `origin`. New rules: at T2 (inherited by T3 and T4), a check that cannot run must exit differently from one that ran; at T3 (inherited by T4), a multi-agent run must be durable by construction. Changed exit codes on several helpers, a new `PLUGIN_ROOT` field in the session anchor, and a publish gate that blocks when any of its tools could not run. No change to tier thresholds, the heartbeat cadence or the chat-claim primitive.
