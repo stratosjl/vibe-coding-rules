@@ -68,17 +68,24 @@ Stop hook beside this one, and no hook input says whether a goal is active.
 Every row this hook logs from main() now records the event's raw
 `stop_hook_active` value (true, false, or null when the field is absent), so
 the interaction between goal continuations and the silent-stop blocker can be
-measured from the log first. The logged value stays raw; the F024 bound
-below reads its own boolean copy, `reentry`.
+measured from the log first. The logged value stays raw.
 
 F024 re-entrancy bound on the silent-stop blocker. The blocker had no bound
 of any kind on consecutive {"decision":"block"} emits: no counter was kept,
 and the Stop event's own stop_hook_active field was never read, so an
 assistant that kept ending its turn on a tool_use with no text could be
 blocked and re-prompted without limit. The hook now stands down (logs
-"silent-stop-suppressed-reentry", emits nothing) when the harness reports
-stop_hook_active, so the blocker speaks at most once per user turn. This
-bounds only the re-prompt loop; first-fire detection is unchanged.
+"silent-stop-suppressed-reentry", emits nothing) when the continuation was
+caused by ITS OWN previous block, so it speaks at most once per chain.
+
+stop_hook_active alone cannot carry that bound. The harness sets it when ANY
+Stop hook blocked, and `/goal` is a Stop hook that blocks on every
+continuation, so standing down on the field alone would switch the blocker
+off for a whole goal run. The blocker therefore writes a per-session marker
+when it blocks, and every Stop event consumes it: re-entry is the field AND
+the marker. A continuation another hook caused carries no marker and is
+checked normally. If the marker cannot be written the blocker does not block,
+because a block it cannot bound is the loop F024 removed.
 """
 
 from __future__ import annotations
@@ -135,6 +142,32 @@ ANCHOR_DIR = Path(tempfile.gettempdir())  # OBS-MET-AK: cross-runtime /tmp diver
 ANCHOR_PREFIX = "claude-methodology-anchor-"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 UPS_MARKER_PREFIX = "claude-methodology-current-session-"
+SILENT_STOP_MARKER_PREFIX = "claude-vcroe-silent-stop-block-"
+
+
+def _silent_stop_marker(session_id: str) -> Path:
+    return ANCHOR_DIR / f"{SILENT_STOP_MARKER_PREFIX}{session_id}"
+
+
+def consume_own_block_marker(session_id: str) -> bool:
+    """True if the previous Stop event of this session was blocked by this
+    hook. Deletes the marker, so it answers for one event only."""
+    p = _silent_stop_marker(session_id)
+    try:
+        p.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return p.exists()
+
+
+def write_own_block_marker(session_id: str) -> bool:
+    try:
+        _silent_stop_marker(session_id).write_text(str(time.time()), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 # v1.3.0: chat-claim refresh (multi-chat-access protection per
 # OBS-vcroe-multi-chat-contamination-01). Stop fires per turn and
@@ -468,10 +501,12 @@ def main() -> int:
     # built on them. Recording only; no behaviour depends on it.
     stop_hook_active = event.get("stop_hook_active")
     # F024: Claude Code sets stop_hook_active=true on the Stop event it fires
-    # as a RESULT of a previous Stop hook block. It is the harness's own
-    # re-entrancy signal and the documented way to keep a Stop hook from
-    # running indefinitely. Consumed by the silent-stop blocker below.
-    reentry = bool(stop_hook_active)
+    # as a RESULT of a previous Stop hook block, by ANY hook. `/goal` is one,
+    # so the field alone would silence the blocker for a whole goal run. The
+    # marker says the previous block was this hook's own; it is consumed on
+    # every event so it never outlives the next Stop.
+    prev_own_block = consume_own_block_marker(session_id) if session_id else False
+    reentry = bool(stop_hook_active) and prev_own_block
 
     # v1.3.0: refresh chat-claim ts before any early-return paths so claim
     # hygiene is independent of transcript / anchor availability.
@@ -579,6 +614,18 @@ def main() -> int:
         return 0
 
     if has_tool_use and not has_text and not has_thinking:
+        if not write_own_block_marker(session_id):
+            append_log({
+                "ts": time.time(),
+                "hook": "stop",
+                "session_id": session_id,
+                "blocked": False,
+                "reason": "silent-stop-unbounded-marker-write-failed",
+                "claim_status": claim_status,
+                "stop_hook_active": stop_hook_active,
+                "routine_version": ROUTINE_VERSION,
+            })
+            return 0
         output = {
             "decision": "block",
             "reason": (

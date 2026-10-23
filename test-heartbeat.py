@@ -193,6 +193,9 @@ def _cleanup(session_id: str) -> None:
     marker = _marker_path()
     if marker.is_file():
         marker.unlink()
+    own = ANCHOR_DIR / f"claude-vcroe-silent-stop-block-{session_id}"
+    if own.is_file():
+        own.unlink()
 
 
 def case_fresh_sentinel_advances(tmp: Path) -> tuple[bool, str]:
@@ -712,6 +715,72 @@ def _stop_hook_active_case(tmp: Path, extra: dict, expect: object,
         _cleanup(sid)
 
 
+def _silent_stop_sequence(tmp: Path, events: list[dict],
+                          plant_marker: bool = False) -> tuple[bool, str, list[str]]:
+    """Run stop.py once per event against one silent-stop transcript; return each event's log reason."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    home = tmp / f"home-{sid}"
+    home.mkdir()
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 5 * 60, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "go"},
+            {"role": "assistant", "blocks": [
+                {"type": "tool_use", "id": "toolu_9", "name": "Bash",
+                 "input": {"command": "true"}}]},
+            {"role": "tool-result", "text": "ok"},
+        ])
+        if plant_marker:
+            (ANCHOR_DIR / f"claude-vcroe-silent-stop-block-{sid}").write_text("1", encoding="utf-8")
+        reasons: list[str] = []
+        seen = 0
+        for extra in events:
+            rc, rows = run_stop_logged(sid, tx, home, extra)
+            if rc != 0:
+                return False, f"FAIL: stop.py rc={rc}", reasons
+            if len(rows) <= seen:
+                return False, "FAIL: no new stop log row", reasons
+            reasons.append(rows[-1].get("reason", ""))
+            seen = len(rows)
+        return True, "", reasons
+    finally:
+        _cleanup(sid)
+
+
+def case_silent_stop_blocks_on_goal_continuation(tmp: Path) -> tuple[bool, str]:
+    """F024 fix: stop_hook_active=true caused by ANOTHER hook (/goal) must not silence the blocker."""
+    ok, msg, reasons = _silent_stop_sequence(tmp, [{"stop_hook_active": True}])
+    if not ok:
+        return False, msg
+    if reasons != ["silent-stop"]:
+        return False, f"FAIL: expected a block on a /goal-style continuation, got {reasons}"
+    return True, "OK (blocked: the continuation was not this hook's own)"
+
+
+def case_silent_stop_stands_down_on_own_reentry(tmp: Path) -> tuple[bool, str]:
+    """F024: after this hook blocked, the continuation it caused stands down, and the bound resets."""
+    ok, msg, reasons = _silent_stop_sequence(tmp, [
+        {"stop_hook_active": False}, {"stop_hook_active": True}, {"stop_hook_active": True}])
+    if not ok:
+        return False, msg
+    want = ["silent-stop", "silent-stop-suppressed-reentry", "silent-stop"]
+    if reasons != want:
+        return False, f"FAIL: expected {want}, got {reasons}"
+    return True, "OK (block, stand down once, then a later continuation is checked again)"
+
+
+def case_silent_stop_stale_marker_does_not_suppress(tmp: Path) -> tuple[bool, str]:
+    """F024: a leftover marker without stop_hook_active (a new user turn) must not suppress a block."""
+    ok, msg, reasons = _silent_stop_sequence(tmp, [{"stop_hook_active": False}], plant_marker=True)
+    if not ok:
+        return False, msg
+    if reasons != ["silent-stop"]:
+        return False, f"FAIL: expected a block despite a stale marker, got {reasons}"
+    return True, "OK (blocked: the marker alone is not re-entry)"
+
+
 def case_stop_logs_stop_hook_active_true(tmp: Path) -> tuple[bool, str]:
     """v1.26.0: a continuation Claude Code marks with stop_hook_active=true is recorded as true."""
     return _stop_hook_active_case(tmp, {"stop_hook_active": True}, True)
@@ -842,6 +911,12 @@ def main() -> int:
          case_stop_logs_stop_hook_active_on_block),
         ("stop logs stop_hook_active on a heartbeat advance (v1.26.0)",
          case_stop_logs_stop_hook_active_on_sentinel),
+        ("silent-stop still blocks on a /goal continuation (v1.27.0 F024)",
+         case_silent_stop_blocks_on_goal_continuation),
+        ("silent-stop stands down once on its own re-entry (v1.27.0 F024)",
+         case_silent_stop_stands_down_on_own_reentry),
+        ("a stale block marker does not suppress (v1.27.0 F024)",
+         case_silent_stop_stale_marker_does_not_suppress),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     # The isolation below moves process-wide state, and the finally clause
