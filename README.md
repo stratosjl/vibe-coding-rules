@@ -96,6 +96,17 @@ Tier detection, methodology slices, `/vc-roe:*` commands, and the T2+ heartbeat 
 5. Auto-detected (S, C) → matrix lookup.
 6. Default T0 if no signals at all.
 
+## How the slice reaches the model (Claude Code)
+
+Claude Code saves a hook's output that is over about 10,000 characters to a file and puts only a 2 KB preview into the model's context, with the file's path. The limit applies to each hook separately. Measured on 2026-10-23: hook outputs of 9,000 and 9,900 characters reached the context in full in the same session, while 10,100 and 12,000 were saved to file. The documentation states no figure for hook output. The T2, T3 and T4 slices are 11 to 16 KB, so a single SessionStart output arrived as a preview.
+
+`hooks/hooks.json` therefore runs `session-start.py` several times at SessionStart:
+
+- `--split` does everything the hook did before (tier detection and floor, chat claim, push-gate check, heartbeat anchor, log) and emits the detection trace and add-on block, without the slice. It names the number of slice parts and the slice's path, so a session missing a part can read the file.
+- `--slice-part 1` to `--slice-part 3` each recompute the tier without writing anything and emit one part of the slice, headed `## Methodology slice <tier> (<S>/<C>), part k of n`. A part the slice does not need prints nothing.
+
+Parts are cut at blank lines where possible, at most 9,000 bytes each. `test-session-start-split.py` fails if a public slice needs more than three parts, if any part's output reaches 9,500 characters, or if the parts do not rejoin to the slice byte for byte. Run without arguments, `session-start.py` still emits one block with the whole slice; the Kimi adapter uses that form.
+
 ## How the heartbeat works
 
 T2+ tiers run a session-health heartbeat every ~30 min wall-clock. The hook layer keeps the clock:
@@ -143,7 +154,7 @@ Sample line:
 {"ts":1777644562.123,"duration_ms":1,"session_id":"...","source_event":"startup","cwd":"/path/to/project","tier":"T2","scope":"S2","criticality":"C1","tier_source":"auto","label":"small project, professional","signals":["S2:decisions.md","S2:handovers","C:GDPR"],"project_root":"/path/to/project","git_root_found":true,"routine_version":"0.3.0"}
 ```
 
-Failure entries use `{"ts":..., "phase":"load_rules|detect|stdin_parse|stdout_write", "error":"<msg>"}`. Hook always exits 0; SessionStart in Claude Code is never blocked by hook failure.
+Failure entries use `{"ts":..., "phase":"load_rules|detect|stdin_parse|stdout_write|slice_part", "error":"<msg>"}`. Hook always exits 0; SessionStart in Claude Code is never blocked by hook failure.
 
 ## Detection rule editing
 

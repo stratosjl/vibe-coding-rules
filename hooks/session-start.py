@@ -143,6 +143,57 @@ DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 PUBLISH_STATE_PATH = Path.home() / ".claude" / "vc-roe-publish-state.json"
 PUBLISH_STATE_STALE_MINUTES = 65  # 30 min cadence + 35 min grace
 
+# Claude Code saves a hook's output that is over about 10,000 characters to a
+# file and puts only a 2 KB preview into the model's context. The limit applies
+# to each hook separately: measured 2026-10-23, outputs of 9,000 and
+# 9,900 characters reached the context in full in one session, while 10,100 and
+# 12,000 were saved to file. So under hooks.json the slice is delivered as up to
+# SLICE_PARTS_MAX separate SessionStart entries (`--slice-part K`), each kept
+# under SLICE_PART_BUDGET_BYTES, and the main entry (`--split`) carries the rest.
+SLICE_PART_BUDGET_BYTES = 9000
+SLICE_PARTS_MAX = 3
+SLICE_PART_OUTPUT_CEILING = 9500  # what a whole part's additionalContext must stay under
+
+
+def split_slice(text: str, budget: int = SLICE_PART_BUDGET_BYTES) -> list[str]:
+    """Split a slice into chunks of at most `budget` UTF-8 bytes.
+
+    Fills each chunk line by line. When the next line would overflow, it cuts
+    at the last blank line in the chunk if that keeps at least half the budget,
+    otherwise at the line end; a single over-long line is cut inside the line.
+    Deterministic, so every part hook computes the same split independently.
+    Joining the chunks with "" gives back `text` exactly.
+    """
+    def size(s: str) -> int:
+        return len(s.encode("utf-8"))
+
+    lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        while size(line) > budget:
+            cut = budget
+            while size(line[:cut]) > budget:
+                cut -= 1
+            lines.append(line[:cut])
+            line = line[cut:]
+        if line:
+            lines.append(line)
+
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        if current and size(current) + size(line) > budget:
+            at = current.rfind("\n\n")
+            if at != -1 and size(current[:at + 2]) >= budget // 2:
+                chunks.append(current[:at + 2])
+                current = current[at + 2:]
+            else:
+                chunks.append(current)
+                current = ""
+        current += line
+    if current or not chunks:
+        chunks.append(current)
+    return chunks
+
 
 def load_rules() -> dict[str, Any]:
     with open(DETECTION_RULES_PATH, "r", encoding="utf-8") as f:
@@ -1051,37 +1102,17 @@ def write_anchor_if_missing(session_id: Optional[str], t0_epoch: int, tier: str)
         pass
 
 
-def main() -> int:
-    started = time.time()
+def resolve_effective_tier(cwd: Path, env: dict[str, str], rules: dict[str, Any],
+                           persist: bool = True) -> dict[str, Any]:
+    """Detect the tier and apply the project tier floor.
 
-    try:
-        raw = sys.stdin.read()
-        event = json.loads(raw) if raw.strip() else {}
-    except Exception as e:
-        append_log({"ts": time.time(), "phase": "stdin_parse", "error": str(e)})
-        return 0
-
-    cwd_raw = event.get("cwd") or os.getcwd()
-    cwd = Path(cwd_raw)
-    env = dict(os.environ)
-
-    try:
-        rules = load_rules()
-    except Exception as e:
-        append_log({"ts": time.time(), "phase": "load_rules", "error": str(e)})
-        return 0
-
-    try:
-        detection = detect_tier(cwd, env, rules)
-    except Exception as e:
-        append_log({
-            "ts": time.time(),
-            "phase": "detect",
-            "error": str(e),
-            "cwd": str(cwd),
-        })
-        return 0
-
+    With persist=False nothing is written, which is what the slice-part hooks
+    use: they run in parallel with the main SessionStart entry and must reach
+    the same effective tier without touching the floor files. An HWM lift
+    writes floor = auto-detected tier, so the tier comes out the same whether a
+    part runs before or after the main entry has written it.
+    """
+    detection = detect_tier(cwd, env, rules)
     # v0.3.0 D-MET-62: apply project tier floor when tier was auto-detected.
     # CLAUDE.md sentinel / .claude/methodology.json / CLAUDE_TIER env remain
     # absolute overrides per the design lock; they bypass the floor.
@@ -1103,7 +1134,8 @@ def main() -> int:
             # auto_detected and persist. Effective tier is auto_detected.
             new_floor = detection["tier"]
             if current_floor != new_floor:
-                write_tier_floor(cwd, new_floor)
+                if persist:
+                    write_tier_floor(cwd, new_floor)
                 detection["signals"].append(f"floor:{new_floor}(hwm)")
                 current_floor = new_floor
             else:
@@ -1122,7 +1154,95 @@ def main() -> int:
         detection["signals"].append(
             f"floor-drift-detected:{previous_floor}->{current_floor}"
         )
-    write_tier_floor_previous(cwd, current_floor)
+    if persist:
+        write_tier_floor_previous(cwd, current_floor)
+    return detection
+
+
+def slice_part_header(tier: str, sc_trace: str, k: int, n: int) -> str:
+    return f"## Methodology slice {tier} {sc_trace}, part {k} of {n}\n\n"
+
+
+def emit_slice_part(k: int, detection: dict[str, Any], started: float) -> int:
+    """Print part k of the tier slice as its own SessionStart context.
+
+    Read-only: no floor, claim, anchor or gate side effects, which belong to
+    the main entry. Prints nothing when the slice has fewer than k parts.
+    """
+    tier = detection["tier"]
+    s, c = detection.get("scope"), detection.get("crit")
+    sc_trace = f"({s}/{c})" if s and c else "(override)"
+    parts = split_slice(load_slice(tier))
+    n = len(parts)
+    if k < 1 or k > n or k > SLICE_PARTS_MAX:
+        append_log({"ts": time.time(), "phase": "slice_part", "part": k, "parts": n,
+                    "tier": tier, "emitted": False})
+        return 0
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": slice_part_header(tier, sc_trace, k, n) + parts[k - 1],
+        }
+    }
+    try:
+        sys.stdout.write(json.dumps(output, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception as e:
+        append_log({"ts": time.time(), "phase": "stdout_write", "part": k, "error": str(e)})
+        return 0
+    append_log({"ts": time.time(), "phase": "slice_part", "part": k, "parts": n,
+                "tier": tier, "emitted": True,
+                "duration_ms": int((time.time() - started) * 1000)})
+    return 0
+
+
+def parse_mode(argv: Optional[list[str]]) -> tuple[bool, Optional[int]]:
+    """Return (split, part). No arguments keeps the single-output behaviour,
+    which the Kimi adapter and every pre-1.27 hooks.json rely on."""
+    args = list(argv or [])
+    if "--slice-part" in args:
+        i = args.index("--slice-part")
+        try:
+            return False, int(args[i + 1])
+        except (IndexError, ValueError):
+            return False, 0
+    return "--split" in args, None
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    started = time.time()
+    split, part = parse_mode(argv)
+
+    try:
+        raw = sys.stdin.read()
+        event = json.loads(raw) if raw.strip() else {}
+    except Exception as e:
+        append_log({"ts": time.time(), "phase": "stdin_parse", "error": str(e)})
+        return 0
+
+    cwd_raw = event.get("cwd") or os.getcwd()
+    cwd = Path(cwd_raw)
+    env = dict(os.environ)
+
+    try:
+        rules = load_rules()
+    except Exception as e:
+        append_log({"ts": time.time(), "phase": "load_rules", "error": str(e)})
+        return 0
+
+    try:
+        detection = resolve_effective_tier(cwd, env, rules, persist=part is None)
+    except Exception as e:
+        append_log({
+            "ts": time.time(),
+            "phase": "detect",
+            "error": str(e),
+            "cwd": str(cwd),
+        })
+        return 0
+
+    if part is not None:
+        return emit_slice_part(part, detection, started)
 
     tier = detection["tier"]
     s = detection.get("scope")
@@ -1130,6 +1250,7 @@ def main() -> int:
     source = detection["source"]
     label = label_for(s, c, rules)
     slice_content = load_slice(tier)
+    slice_parts = split_slice(slice_content)
 
     # Optional machine-local SessionStart addon (extension point). An install
     # that carries a private extension module at ~/.claude/vc-roe-addons may
@@ -1248,11 +1369,31 @@ def main() -> int:
             "(core.hooksPath unset) and automatic re-arm FAILED. Run "
             "`bash bin/install-hooks.sh` before your next push (OBS-AUD-2).\n\n"
         )
+    n_parts = len(slice_parts)
+    if split:
+        slice_path = CONTENT_DIR / f"{tier}.md"
+        if n_parts <= SLICE_PARTS_MAX:
+            delivery = (
+                f"The {tier} slice is delivered as {n_parts} further SessionStart "
+                f"context block(s), each headed \"## Methodology slice {tier} "
+                f"{sc_trace}, part k of {n_parts}\". If any part is missing from "
+                f"your context, read the whole slice at `{slice_path}` before "
+                f"starting work."
+            )
+        else:
+            delivery = (
+                f"The {tier} slice has {n_parts} parts but only {SLICE_PARTS_MAX} "
+                f"are injected. Read the whole slice at `{slice_path}` before "
+                f"starting work."
+            )
+        slice_section = f"{delivery}\n\n"
+    else:
+        slice_section = f"{slice_content}\n\n"
     additional = (
         f"{claim_banner_text}"
         f"{gate_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
-        f"{slice_content}\n\n"
+        f"{slice_section}"
         f"{addon_block}"
         f"## Tier detection trace\n"
         f"- effective_tier: {tier}\n"
@@ -1269,6 +1410,7 @@ def main() -> int:
         f"- publish_state: {publish_state_line}\n"
         f"- pre_push_gate: {gate_state}\n"
         f"- session_start_addon: {addon_state}\n"
+        f"- slice_delivery: {'split, ' + str(n_parts) + ' part(s)' if split else 'inline'}\n"
     )
 
     output = {
@@ -1311,4 +1453,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

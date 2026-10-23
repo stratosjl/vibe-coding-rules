@@ -4,6 +4,22 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## Unreleased (version number assigned at release)
+
+Minor. The tier slice now reaches the model in full at SessionStart. Claude Code saves a hook output over about 10,000 characters to a file and shows the model a 2 KB preview, per hook (measured 2026-10-23: 9,000 and 9,900 characters arrived inline in one session, 10,100 and 12,000 were saved to file). The T2, T3 and T4 slices are 14,548, 11,452 and 16,023 bytes, so sessions at those tiers saw the start of the slice and a path. Reported by vc-roe-private as OBS-S92-01, which counted 199 saved public outputs on one node.
+
+### What changed
+
+- **`hooks/hooks.json`.** SessionStart runs `session-start.py --split` plus `--slice-part 1` to `3`, as four entries.
+- **`hooks/session-start.py`.** `--split` keeps every side effect and emits the trace and add-on block without the slice, naming the part count and the slice path; `--slice-part K` emits part K only and writes nothing. The tier-floor logic moved into `resolve_effective_tier(persist=...)` so both modes reach the same tier. `split_slice()` cuts at blank lines where it can, at most 9,000 UTF-8 bytes per part. With no argument the hook behaves as before, which the Kimi adapter relies on. The trace gains `slice_delivery`.
+- **README** gains "How the slice reaches the model".
+
+### Evidence
+
+- `test-session-start-split.py` (new), 66 arms run as real processes: for T0 to T4, every part's output is under 9,500 characters and bytes, parts rejoin to the slice exactly and are labelled, the `--split` block carries no slice text and names the parts and path, and the default output still carries the whole slice; part hooks write no floor, claim or anchor while `--split` does (positive control); `hooks.json` wiring; `split_slice` on synthetic input (over-long line, no blank lines, Greek, empty); a slice needing more than three parts is announced. Negative tests: a 9,000 to 12,000 byte budget fails the size arms for T2, T3 and T4, and dropping one part entry fails the wiring arm.
+- End to end, a headless Claude Code session with these hooks at T4: both parts arrived inline, no hook output was saved to file, and the end and middle of the T4 slice were in the transcript.
+- All eleven suites pass.
+
 ## v1.26.0
 
 Minor. Support for Claude Code's `/goal`, which keeps a session working until a small model, reading only the conversation, judges a condition met. The opening prompts this methodology already writes end in a list of checks, which is what a goal needs as its "done" test. Three things stood in the way, each measured or read from the documentation on 2026-10-23: recent opening prompts run to 4,494 to 5,892 characters against a 4,000-character cap on the condition; the evaluator runs no command and reads no file, so a check written as an assertion cannot be judged; and a goal is built not to stop, while T4's confirmation gates are built to stop.
