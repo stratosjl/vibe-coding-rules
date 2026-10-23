@@ -1,3 +1,4 @@
+import ast
 import copy
 import hashlib
 import importlib.util
@@ -215,6 +216,70 @@ class ContinuationTests(unittest.TestCase):
                                  '--plan', str(draft)], capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(json.loads(self.path.read_text())['tasks']), 2)
+
+
+def probe_sandbox_problems(source):
+    """Static check of the native probe's sandbox: the probe runs on import, so it is parsed, not imported."""
+    tree = ast.parse(source)
+    problems = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value in ('danger-full-access', 'dangerFullAccess'):
+            problems.append('full-access sandbox literal on line %d' % node.lineno)
+    policy = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) == 'turn_sandbox' for t in node.targets):
+            policy = node.value
+    if not isinstance(policy, ast.Dict):
+        problems.append('no module-level turn_sandbox dict')
+    else:
+        fields = {k.value: v for k, v in zip(policy.keys, policy.values) if isinstance(k, ast.Constant)}
+        if getattr(fields.get('type'), 'value', None) != 'workspaceWrite':
+            problems.append('turn_sandbox type is not workspaceWrite')
+        if getattr(fields.get('networkAccess'), 'value', None) is not False:
+            problems.append('turn_sandbox does not set networkAccess False')
+        roots = fields.get('writableRoots')
+        if not isinstance(roots, ast.List) or len(roots.elts) != 1:
+            problems.append('turn_sandbox must name exactly one extra writable root')
+    starts = {'thread/start': 0, 'turn/start': 0}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, 'attr', None) == 'call' and len(node.args) >= 2):
+            continue
+        method = getattr(node.args[0], 'value', None)
+        params = node.args[1]
+        if method not in starts or not isinstance(params, ast.Dict):
+            continue
+        starts[method] += 1
+        fields = {k.value: v for k, v in zip(params.keys, params.values) if isinstance(k, ast.Constant)}
+        if method == 'thread/start' and getattr(fields.get('sandbox'), 'value', None) != 'workspace-write':
+            problems.append('thread/start on line %d is not workspace-write' % node.lineno)
+        if method == 'turn/start' and getattr(fields.get('sandboxPolicy'), 'id', None) != 'turn_sandbox':
+            problems.append('turn/start on line %d does not pass turn_sandbox' % node.lineno)
+    for method, count in starts.items():
+        if not count:
+            problems.append('no %s call found' % method)
+    return problems
+
+
+class ProbeSandboxTests(unittest.TestCase):
+    source = Path(__file__).with_name('probe_continuation.py').read_text(encoding='utf-8')
+
+    def test_probe_is_confined_to_workspace_write(self):
+        self.assertEqual(probe_sandbox_problems(self.source), [])
+
+    def test_guard_fails_when_full_access_returns(self):
+        broken = self.source.replace("'sandbox':'workspace-write'", "'sandbox':'danger-full-access'", 1)
+        self.assertNotEqual(broken, self.source)
+        self.assertTrue(probe_sandbox_problems(broken))
+
+    def test_guard_fails_when_a_turn_drops_the_policy(self):
+        broken = self.source.replace("'sandboxPolicy':turn_sandbox,", '', 1)
+        self.assertNotEqual(broken, self.source)
+        self.assertTrue(probe_sandbox_problems(broken))
+
+    def test_guard_fails_when_network_is_opened(self):
+        broken = self.source.replace("'networkAccess':False", "'networkAccess':True", 1)
+        self.assertNotEqual(broken, self.source)
+        self.assertTrue(probe_sandbox_problems(broken))
 
 
 if __name__ == '__main__':

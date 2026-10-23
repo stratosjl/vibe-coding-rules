@@ -51,9 +51,12 @@ only this Stop handler through a process-local override while preserving the
 other hook settings; B must remain absent. The lifecycle case interrupts an
 active turn, compacts its context and submits an explicit stop; B must stay absent.
 The probes return nonzero when their acceptance conditions fail and retain raw
-evidence locally. They select full file access only for their disposable threads
-so the model can write both the fixture and its contract. Global sandbox settings
-are unchanged.
+evidence locally. Their threads run under `workspace-write` with network access
+off: the model may write only its disposable workspace and the runtime state
+directory `CODEX_HOME/vc-roe/continuation`, where the registered check records
+its receipt. The probe registers the contract itself, outside the sandbox.
+`test_continuation.py` fails if a probe thread or turn loses that confinement.
+Global sandbox settings are unchanged.
 
 ## Register authorized work
 
