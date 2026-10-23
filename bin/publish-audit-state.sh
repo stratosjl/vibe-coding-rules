@@ -65,13 +65,32 @@ if [ ! -r "$PUBLISH_AUDIT" ]; then
   notrunnable "cannot find $PUBLISH_AUDIT; nothing was audited"
 fi
 
-# Resolve the public remote URL. Default to the canonical GitHub URL if
-# no origin remote is configured. Translate SSH → HTTPS for the audit
-# clone: the audit is read-only, the public repo allows anonymous HTTPS
-# read, and HTTPS works without an SSH key in the agent. Push-time auth
-# (SSH) is unrelated to audit-time auth (HTTPS).
-REMOTE_URL_RAW="$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || echo '')"
+# Resolve the published remote URL, BY CONVENTION rather than by the name
+# `origin`. Remotes here are named for what they are: `gitea` for the
+# self-hosted forge, `github` for GitHub. `origin` is the un-migrated legacy
+# name and is tried last rather than first.
+#
+# This used to read remote.origin.url and nothing else. On a repo following
+# the convention that returns empty, and the empty value fell straight through
+# to the hard-coded URL below, so the audit silently compared a DIFFERENT
+# repository's published state and still reported PASS. The remote that
+# answered is now named in the output, so a reader can see what was audited
+# rather than assuming.
+#
+# Translate SSH to HTTPS for the audit clone: the audit is read-only, a public
+# repo allows anonymous HTTPS read, and HTTPS works without an SSH key in the
+# agent. Push-time auth (SSH) is unrelated to audit-time auth (HTTPS).
+REMOTE_URL_RAW=""
+REMOTE_NAME=""
+for _candidate in gitea github origin; do
+  REMOTE_URL_RAW="$(git -C "$REPO_ROOT" config --get "remote.${_candidate}.url" 2>/dev/null || echo '')"
+  if [ -n "$REMOTE_URL_RAW" ]; then
+    REMOTE_NAME="$_candidate"
+    break
+  fi
+done
 if [ -z "$REMOTE_URL_RAW" ]; then
+  REMOTE_NAME='built-in fallback, NO remote configured'
   REMOTE_URL_RAW='git@github.com:stratosjl/vibe-coding-rules.git'
 fi
 case "$REMOTE_URL_RAW" in
