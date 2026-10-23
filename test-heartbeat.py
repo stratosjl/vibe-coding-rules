@@ -505,6 +505,103 @@ def case_silent_stop_with_thinking_does_not_block(tmp: Path) -> tuple[bool, str]
         _cleanup(sid)
 
 
+def run_stop_logged(session_id: str, transcript_path: Path, home: Path,
+                    extra: dict | None = None) -> tuple[int, list[dict]]:
+    """Run stop.py with HOME pointed at a temp dir; return (rc, this session's log rows).
+
+    v1.26.0: the hook log lives under the home directory, so a temp HOME keeps
+    the test off the operator's real log and lets it read back what was written.
+    """
+    event = {
+        "session_id": session_id,
+        "transcript_path": str(transcript_path),
+        "cwd": str(PLUGIN_ROOT),
+    }
+    event.update(extra or {})
+    env = os.environ.copy()
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    proc = subprocess.run(
+        [sys.executable, str(STOP_HOOK)],
+        input=json.dumps(event).encode("utf-8"),
+        capture_output=True,
+        env=env,
+        timeout=10,
+    )
+    rows: list[dict] = []
+    log = home / ".claude" / "methodology-hook.log"
+    if log.is_file():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if row.get("hook") == "stop" and row.get("session_id") == session_id:
+                rows.append(row)
+    return proc.returncode, rows
+
+
+def _stop_hook_active_case(tmp: Path, extra: dict, expect: object,
+                           silent_stop: bool = False,
+                           text: str = "Done with this step.") -> tuple[bool, str]:
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    home = tmp / f"home-{sid}"
+    home.mkdir()
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 5 * 60, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        if silent_stop:
+            turns = [
+                {"role": "user-prompt", "text": "go"},
+                {"role": "assistant", "blocks": [
+                    {"type": "tool_use", "id": "toolu_9", "name": "Bash",
+                     "input": {"command": "true"}}]},
+                {"role": "tool-result", "text": "ok"},
+            ]
+        else:
+            turns = [
+                {"role": "user-prompt", "text": "go"},
+                {"role": "assistant", "text": text},
+            ]
+        write_transcript(tx, turns)
+        rc, rows = run_stop_logged(sid, tx, home, extra)
+        if rc != 0:
+            return False, f"FAIL: stop.py rc={rc}"
+        if not rows:
+            return False, "FAIL: no stop log row written for this session"
+        row = rows[-1]
+        if "stop_hook_active" not in row:
+            return False, f"FAIL: log row has no stop_hook_active key: {row}"
+        if row["stop_hook_active"] != expect:
+            return False, f"FAIL: stop_hook_active={row['stop_hook_active']!r}, expected {expect!r}"
+        return True, f"OK (logged stop_hook_active={expect!r})"
+    finally:
+        _cleanup(sid)
+
+
+def case_stop_logs_stop_hook_active_true(tmp: Path) -> tuple[bool, str]:
+    """v1.26.0: a continuation Claude Code marks with stop_hook_active=true is recorded as true."""
+    return _stop_hook_active_case(tmp, {"stop_hook_active": True}, True)
+
+
+def case_stop_logs_stop_hook_active_absent(tmp: Path) -> tuple[bool, str]:
+    """v1.26.0: an event without the field is recorded as null, not as false."""
+    return _stop_hook_active_case(tmp, {}, None)
+
+
+def case_stop_logs_stop_hook_active_on_block(tmp: Path) -> tuple[bool, str]:
+    """v1.26.0: the silent-stop block row carries the field too."""
+    return _stop_hook_active_case(tmp, {"stop_hook_active": False}, False, silent_stop=True)
+
+
+def case_stop_logs_stop_hook_active_on_sentinel(tmp: Path) -> tuple[bool, str]:
+    """v1.26.0: the sentinel-found row (heartbeat advanced) carries the field too."""
+    return _stop_hook_active_case(tmp, {"stop_hook_active": True}, True,
+                                  text="Status block.\n[heartbeat-fired:T+5m]")
+
+
 def run_ups(session_id: str, enforce: bool = False) -> str:
     """Run hooks/user-prompt-submit.py end-to-end; return its additionalContext."""
     event = {"session_id": session_id, "cwd": str(PLUGIN_ROOT), "user_prompt": "carry on"}
@@ -605,6 +702,14 @@ def main() -> int:
          case_ups_enforcement_switch_restores_demand),
         ("20 min is under the 30 min cadence (v1.20.0 I-9)",
          case_ups_under_cadence_is_ok),
+        ("stop logs stop_hook_active=true (v1.26.0)",
+         case_stop_logs_stop_hook_active_true),
+        ("stop logs stop_hook_active=null when absent (v1.26.0)",
+         case_stop_logs_stop_hook_active_absent),
+        ("stop logs stop_hook_active on a silent-stop block (v1.26.0)",
+         case_stop_logs_stop_hook_active_on_block),
+        ("stop logs stop_hook_active on a heartbeat advance (v1.26.0)",
+         case_stop_logs_stop_hook_active_on_sentinel),
     ]
     parent = Path(tempfile.mkdtemp(prefix="vc-roe-heartbeat-tests-"))
     try:

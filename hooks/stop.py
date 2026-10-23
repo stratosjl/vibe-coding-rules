@@ -62,6 +62,13 @@ normal case rather than the exceptional one. Set
 VC_ROE_HEARTBEAT_ENFORCEMENT=1 to put the enforced reading back. The
 silent-stop blocker above is a separate mechanism and is NOT affected by
 this switch.
+
+v1.26.0 goal instrumentation. Claude Code's `/goal` runs as a session-scoped
+Stop hook beside this one, and no hook input says whether a goal is active.
+Every row this hook logs from main() now records the event's raw
+`stop_hook_active` value (true, false, or null when the field is absent), so
+the interaction between goal continuations and the silent-stop blocker can be
+measured from the log first. Recording only: nothing reads the field.
 """
 
 from __future__ import annotations
@@ -446,6 +453,10 @@ def main() -> int:
 
     session_id = event.get("session_id") or ""
     transcript_path = event.get("transcript_path") or ""
+    # v1.26.0: recorded raw on every row (true / false / null when absent)
+    # so goal-driven continuations can be measured before anything is
+    # built on them. Recording only; no behaviour depends on it.
+    stop_hook_active = event.get("stop_hook_active")
 
     # v1.3.0: refresh chat-claim ts before any early-return paths so claim
     # hygiene is independent of transcript / anchor availability.
@@ -458,6 +469,7 @@ def main() -> int:
             "session_id": session_id,
             "phase": "early-return-no-session-or-transcript",
             "claim_status": claim_status,
+            "stop_hook_active": stop_hook_active,
             "routine_version": ROUTINE_VERSION,
         })
         return 0
@@ -549,6 +561,7 @@ def main() -> int:
             "blocked": True,
             "reason": "silent-stop",
             "claim_status": claim_status,
+            "stop_hook_active": stop_hook_active,
             "routine_version": ROUTINE_VERSION,
         })
         return 0
@@ -564,6 +577,7 @@ def main() -> int:
             "blocked": False,
             "reason": "silent-stop-suppressed-thinking",
             "claim_status": claim_status,
+            "stop_hook_active": stop_hook_active,
             "routine_version": ROUTINE_VERSION,
         })
 
@@ -581,6 +595,7 @@ def main() -> int:
             "session_id": session_id,
             "sentinel_found": False,
             "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
+            "stop_hook_active": stop_hook_active,
             "routine_version": ROUTINE_VERSION,
         })
         return 0
@@ -604,6 +619,7 @@ def main() -> int:
         "sentinel_found": True,
         "last_heartbeat_advanced_to": now,
         "enforcement": "on" if HEARTBEAT_ENFORCEMENT else "informational",
+        "stop_hook_active": stop_hook_active,
         "routine_version": ROUTINE_VERSION,
     })
     return 0

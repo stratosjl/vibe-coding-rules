@@ -4,6 +4,33 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.26.0
+
+Minor. Support for Claude Code's `/goal`, which keeps a session working until a small model, reading only the conversation, judges a condition met. The opening prompts this methodology already writes end in a list of checks, which is what a goal needs as its "done" test. Three things stood in the way, each measured or read from the documentation on 2026-10-23: recent opening prompts run to 4,494 to 5,892 characters against a 4,000-character cap on the condition; the evaluator runs no command and reads no file, so a check written as an assertion cannot be judged; and a goal is built not to stop, while T4's confirmation gates are built to stop.
+
+### What changed
+
+- **T2 item 17 (new).** In Claude Code projects the opening prompt ends with a `## Goal` section holding one ready-to-paste `/goal` block. The condition points at the prompt file instead of copying it, asks for evidence "shown in this conversation", carries a stop-to-ask clause and ends with a turn bound. The slice documents what is and is not known about `/clear`, resume and compaction.
+- **T2 item 5.** Each pre-next-chat verification check is written as a command plus the output that passes it, never as a bare assertion. This helps any reader of the handover, not only a goal evaluator.
+- **T4 element 8c (new) and a "Goal runs" section.** At T4 the goal block must pass the checker before close, and five rules keep the gates: the permission prompt is the hard gate (keep gated commands off the allow list; never run a T4 goal in auto mode), a fixed clause is the soft gate, evidence must be in the chat, the bound applies per sitting because a resumed goal restarts its turn count, and `/clear` ends the goal.
+- **T3 and T4 inherited lists** name T2 items 5 and 17.
+- **`bin/check-goal-block.py` (new).** Seven checks (G1 to G7): one `## Goal` heading outside code fences, one `/goal` block in that section, a condition of 1 to 4,000 characters counted in UTF-16 code units, the prompt's own filename (so a goal copied from the previous session's prompt fails), the stop-to-ask clause, a bound, and the evidence wording. Exit 0, 1, or 2 when the file cannot be read. `--self-test` plants one defect per check and asserts that exactly that check fails.
+- **`hooks/stop.py`.** Every log row from `main()` records the event's raw `stop_hook_active` value (`true`, `false`, or `null` when absent). Recording only. No hook input says whether a goal is active, so how goal continuations meet the silent-stop blocker is measured from the log before anything is built on it.
+- **README** gains a "Working with `/goal`" section.
+
+### Evidence
+
+- `test-goal-block.py` (new), 21 arms: a well-formed prompt passes; one fixture per check fails exactly that check and nothing else; Greek text is counted in characters, not bytes; a `/goal` block outside the Goal section and a `## Goal` line inside a code fence are both ignored; an unreadable file exits 2; the checker's self-test passes (8 of 8); and the slices agree with the checker (they name it, the T4 slice carries its canonical clause verbatim, the 4,000 cap matches). The five slice arms failed before the slice edits and pass after.
+- `test-heartbeat.py`, 14 to 18 arms: the field is logged as `true`, as `null` when absent, on a silent-stop block row, and on a heartbeat-advance row. Run against the v1.25.1 `stop.py`, exactly those 4 arms fail.
+- All ten suites pass.
+
+### Not changed
+
+- The silent-stop blocker's behaviour and message. Its v1.12.1 thinking-block guard means it already stands down on turns that carry thinking blocks, which is most turns on models that think.
+- `hooks/kimi/stop.py`, `commands-kimi/` and `policy/shared.md`: Kimi Code and Codex have no `/goal`.
+- No `/vc-roe:goal` slash command. The documentation does not say a plugin command can start a goal, and `claude -p "/goal ..."` removes the permission prompts that T4 relies on.
+- Whether the evaluator sees hook-injected text such as the session clock tag, and whether a goal survives compaction, are untested. The slices say so rather than relying on either.
+
 ## v1.25.1
 
 Patch. `/tier` accepted a lower-case argument and then wrote it, unchanged, into three places that

@@ -108,6 +108,21 @@ Since v1.20.0 the tag is **informational**. When the cadence has elapsed the tag
 
 To put the old enforcement back, set `VC_ROE_HEARTBEAT_ENFORCEMENT=1` in the environment (or flip `HEARTBEAT_ENFORCEMENT_DEFAULT` to `True` in `hooks/user-prompt-submit.py`, `hooks/post-tool-use.py`, `hooks/stop.py` and `hooks/kimi/stop.py`). The demand text and the Kimi-side turn-end block are kept intact behind that switch. The cadence itself is one constant, `CADENCE_SEC`, carried in the same four files.
 
+## Working with `/goal` (Claude Code, since v1.26.0)
+
+Claude Code's `/goal` keeps a session working until a small model, reading only the conversation, judges a condition met. From T2 up, the opening prompt for the next session ends with a `## Goal` section holding a ready-to-paste `/goal` line (T2 item 17), and its verification checks are written as a command plus the output that passes it (T2 item 5), so the evaluator can judge them from what is shown. At T4 the goal carries a fixed stop-to-ask clause and the confirmation gates rely on permission prompts, so never run a T4 goal in auto mode (T4 "Goal runs").
+
+Check a prompt's goal block before close:
+
+```bash
+python3 bin/check-goal-block.py handovers/session-12-opening-prompt.md
+python3 bin/check-goal-block.py --self-test
+```
+
+It checks for one `## Goal` section with one `/goal` block, a condition of at most 4,000 characters, the prompt's own filename, the stop-to-ask clause, a turn bound and the "shown in this conversation" wording. It exits 0 when all pass, 1 on any miss, and 2 when the file cannot be read.
+
+The Stop hook records Claude Code's `stop_hook_active` field on every log row (`true`, `false`, or `null` when absent). No hook input says whether a goal is active, so the log is how the interaction with the silent-stop blocker gets measured before anything is built on it.
+
 ## Updating
 
 Claude Code holds an in-memory snapshot of plugin hooks across each Claude Code process. `claude plugin update` writes the new version to disk but the running process keeps invoking the old hook code from its snapshot until restart. `/clear` does NOT refresh this snapshot.
