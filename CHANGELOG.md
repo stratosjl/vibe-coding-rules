@@ -4,6 +4,26 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.29.0
+
+Minor. Shared assurance controls, implemented from the brief in `docs/proposals/shared-assurance-controls.md`. Four controls are now defined once, in `policy/assurance.md`, and the tier slices, both audit-pass commands and the shared Codex policy refer to that file instead of restating it: requirements-to-test traceability (`AC-TRACE`), independent policy and isolation review (`AC-REVIEW`), tested restoration (`AC-RESTORE`) and revision-bound evidence (`AC-EVIDENCE`).
+
+### What changed
+
+- **`policy/assurance.md` (new).** Each control's trigger, required evidence and closure rule; the tier matrix; the `## Assurance` record format (thirteen columns, seven statuses); what a structural check can and cannot prove; and one fenced `assurance-contract` JSON block that the checker reads, so the rules are written once.
+- **`bin/check-assurance.py` (new).** Validates a record against the contract. A row may say `passed` only with evidence of a kind that can pass that control, a `pass` result and a revision matching `--revision` (a 7-character prefix either way); a dirty revision needs a digest. `AC-RESTORE` cannot pass on a backup, and `AC-REVIEW` needs a reviewer and an independence basis that is more than a tool or model name. Not-applicable needs a reason and nothing else. An accepted risk needs an owner, reason and trigger, lapses on its date, and is counted apart from passes. `--tier T3` and `--tier T4` require the decisions the contract names; `--release` requires every applicable control to be passed or a valid accepted risk. Exit 0, 1, or 2 when the record or contract cannot be read. `--self-test` plants one clean, one mislabelled and one missing table. Every run states that the check is structural.
+- **Slices.** T1 item 7 (name the check and what it checked; the triggers apply at any tier), T2 item 18 (`AC-TRACE` links and `AC-EVIDENCE` dirty-state identity), T3 item 15 (`AC-REVIEW` before integrating a boundary change, `AC-RESTORE` before relying on a backup) and T3 item 1 (the audit pass is recorded as an `AC-REVIEW` row), T4 elements 1 and 4 (the release runs the checker with `--tier T4 --release`; trace rows link the record; changed inputs make a result stale). The T3 and T4 inherited lines name the new items.
+- **`commands/audit-pass.md`, `commands-kimi/audit-pass.md`.** Step 3 records the boundary changed and, when the pass runs, an `AC-REVIEW` row.
+- **`policy/shared.md`.** One tool-neutral paragraph pointing Codex at the same policy.
+- **`docs/examples/assurance-record.md` (new).** A synthetic record with a passed, a justified not-applicable, a stale and a failed control.
+- **README** gains "Assurance controls", which separates what is implemented, what is verified and what no check can verify; the proposal's status line and PROJECT.md's pending-work section say it is implemented.
+
+### Evidence
+
+- `test-assurance.py` (new), 46 arms: the contract block is complete and consistent; 15 rejections and 5 acceptances, one per acceptance criterion, run as real processes; the five Review Focus inputs of the plan (short against full revision, an escaped pipe in a cell, a missing and a duplicated table, status case and spacing); the example record is well formed and is not release-ready for exactly its stale review and failed manifest; the self-test passes; and every slice and command names only contract control IDs. Negative test: with the failed-result check disabled, exactly the two arms that plant a failed result fail.
+- `test-session-start-split.py`: every public slice still reaches the model in at most three parts under 9,500 characters; T2, T3 and T4 now use all three.
+- All thirteen suites pass.
+
 ## v1.28.1
 
 Patch. The native Codex probes no longer give their model full disk access. `codex/probe_continuation.py` started each disposable thread with `danger-full-access` and `approvalPolicy: never`, so only the prompt kept an unattended model inside its temporary workspace. Raised by an automated security review on 2026-10-23.

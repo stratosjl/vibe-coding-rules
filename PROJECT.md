@@ -36,7 +36,4 @@ Existing project records:
 
 ## Pending methodology work
 
-[Shared assurance controls](docs/proposals/shared-assurance-controls.md) is a
-proposed implementation brief assessed against source revision
-`533f568e1900cffe842c732ac0b473a55d0574b0`. No assurance-policy behavior has been
-implemented by adding the proposal. Read its continuation brief before work.
+None open. The shared assurance controls were implemented in v1.29.0: [policy/assurance.md](policy/assurance.md) is their one definition, and [the proposal](docs/proposals/shared-assurance-controls.md) is kept as the brief it followed.

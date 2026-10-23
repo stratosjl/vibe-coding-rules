@@ -5,9 +5,7 @@ tier-based minimums and activate additional requirements when the work touches
 the relevant risk. Make their applicability explicit at T4; do not reserve all
 four controls exclusively for T4 or introduce T5.
 
-Status: proposed, not implemented. This document changes no active tier,
-hook, permission or release behavior. It is a source-repository implementation
-brief, not a plugin release.
+Status: implemented in v1.29.0 as [policy/assurance.md](../../policy/assurance.md) and `bin/check-assurance.py`, and verified by `test-assurance.py`. This document is kept unchanged below as the brief that implementation followed.
 
 ## Scope and evidence
 

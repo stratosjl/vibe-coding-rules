@@ -227,7 +227,19 @@ The plugin started as a private internal tool for managing scale-of-rigour misma
 
 ## Development proposals
 
-[Shared assurance controls](docs/proposals/shared-assurance-controls.md) proposes
-requirement-to-test links, independent boundary review, demonstrated restoration
-and revision-bound evidence across tiers and native adapters. It includes an
-implementation continuation brief; these changes are not yet active.
+[Shared assurance controls](docs/proposals/shared-assurance-controls.md) was the brief for the controls below, implemented in v1.29.0.
+
+## Assurance controls (since v1.29.0)
+
+Four controls are defined once, in [policy/assurance.md](policy/assurance.md): requirements-to-test traceability (`AC-TRACE`), independent policy and isolation review (`AC-REVIEW`), tested restoration (`AC-RESTORE`) and revision-bound evidence (`AC-EVIDENCE`). Each applies when its trigger is met, at any tier, and the tier slices set the minimum: T1 item 7, T2 item 18, T3 item 15 and T4 elements 1 and 4. The audit-pass command records the pass as an `AC-REVIEW` row, and the shared Codex policy links to the same file.
+
+A project records the controls in one `## Assurance` table in an existing record. `bin/check-assurance.py <record> [--tier T3|T4] [--revision <sha>] [--release]` validates it against the contract block at the end of the policy:
+
+```bash
+python3 bin/check-assurance.py docs/examples/assurance-record.md --revision 1111111            # exits 0
+python3 bin/check-assurance.py docs/examples/assurance-record.md --revision 1111111 --release  # exits 1: a stale review, a failed manifest
+```
+
+- **Implemented:** the policy and its contract, the checker, the example record, and the references from the slices, both audit-pass commands and `policy/shared.md`.
+- **Verified:** `test-assurance.py` runs the checker as a real process. It rejects a pass with missing evidence, a failed result, another revision or a dirty revision without a digest, a backup offered as a restore test, a review without a reviewer or with only a tool name as its independence, and an expired accepted risk. It accepts a justified not-applicable row and counts an accepted risk apart from passes.
+- **Not verified by any check, by design:** whether a review was independent in fact, and whether a restore succeeded. The checker validates structure and says so in its output.

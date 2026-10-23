@@ -34,3 +34,5 @@ which processes or agents were actually confirmed stopped. A passing local check
 does not clear another failed requirement. The
 [Codex integration](../codex/README.md) provides a tested mechanism for registered
 work and states the limits of its runtime enforcement.
+
+When work changes a trust boundary, touches persistent state that matters, or supports a release, apply the shared assurance controls in [assurance.md](assurance.md): record whether each applies and why, keep its evidence tied to the exact revision checked, and do not label missing, failed, stale or substitute evidence as passed. A structural check of that record is a structural result; it does not show that a review was independent or that a restore succeeded.

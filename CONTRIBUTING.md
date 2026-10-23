@@ -7,6 +7,7 @@ Pull requests welcome. Before you open one, three things make merging easier.
 ```bash
 python3 test-detection.py   # Linux, macOS
 python test-detection.py    # Windows
+python3 test-assurance.py   # shared assurance controls and bin/check-assurance.py
 ```
 
 On Windows `python3` is the Microsoft Store app-execution alias: it passes a
