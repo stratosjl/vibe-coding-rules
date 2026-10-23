@@ -300,21 +300,51 @@ def arm_commands() -> None:
             if "SLICE=" in b and RESOLVER_BEGIN in b
         ).replace("$ARGUMENTS", "T4")
 
+        # A fake plugin search dir holding one install, so the anchor's root
+        # lies inside the search dir, as a real cached install does. The
+        # resolver refuses a root outside it (arms below).
+        plugins = tmp / "plugins"
+        inst = plugins / "cache" / "vc-roe" / "9.9.9"
+        for sub in ("methodology-content", ".claude-plugin", "bin"):
+            shutil.copytree(REPO_ROOT / sub, inst / sub)
+        local = slice_block.replace('VC_ROE_SEARCH="$HOME/.claude/plugins"',
+                                    f'VC_ROE_SEARCH="{plugins.as_posix()}"')
+
+        def anchor(sid: str, root: "Path | str | None") -> None:
+            line = f"PLUGIN_ROOT={Path(root).as_posix() if isinstance(root, Path) else root}\n" if root is not None else ""
+            (anchors / f"claude-methodology-anchor-{sid}").write_text(
+                f"T0=1\nLAST_HEARTBEAT=0\nTIER=T4\n{line}", encoding="utf-8")
+
         anchors = tmp / "anchors"
         anchors.mkdir()
-        (anchors / "claude-methodology-anchor-sid").write_text(
-            f"T0=1\nLAST_HEARTBEAT=0\nTIER=T4\nPLUGIN_ROOT={REPO_ROOT.as_posix()}\n",
-            encoding="utf-8",
-        )
-        r = sh(slice_block, env={"CLAUDE_CODE_SESSION_ID": "sid", "TMPDIR": str(anchors)})
+        anchor("sid", inst)
+        r = sh(local, env={"CLAUDE_CODE_SESSION_ID": "sid", "TMPDIR": str(anchors)})
         check("resolves via THIS SESSION's anchor", r.returncode == 0 and "this session own anchor" in r.stdout)
         check("emits the slice content", "--- methodology slice T4 begin ---" in r.stdout)
 
-        (anchors / "claude-methodology-anchor-old").write_text(
-            "T0=1\nLAST_HEARTBEAT=0\nTIER=T4\n", encoding="utf-8")
-        r = sh(slice_block, env={"CLAUDE_CODE_SESSION_ID": "old", "TMPDIR": str(anchors)})
+        anchor("old", None)
+        r = sh(local, env={"CLAUDE_CODE_SESSION_ID": "old", "TMPDIR": str(anchors)})
         check("falls back when the anchor predates PLUGIN_ROOT",
               r.returncode == 0 and "FALLBACK" in r.stdout)
+
+        # The anchor lives in a temp dir that can be shared, and its root
+        # decides which script the command runs. A root outside the search
+        # dir must not be taken from it, however it is spelled.
+        outside = tmp / "outside"
+        for sub in ("methodology-content", ".claude-plugin", "bin"):
+            shutil.copytree(REPO_ROOT / sub, outside / sub)
+        sibling = tmp / "plugins-evil"
+        for sub in ("methodology-content", ".claude-plugin", "bin"):
+            shutil.copytree(REPO_ROOT / sub, sibling / sub)
+        for sid, root, what in (
+                ("out", outside, "a root outside the search dir"),
+                ("dotdot", f"{plugins.as_posix()}/../outside", "a '..' escape from the search dir"),
+                ("sib", sibling, "a sibling dir sharing the search dir's name prefix")):
+            anchor(sid, root)
+            r = sh(local, env={"CLAUDE_CODE_SESSION_ID": sid, "TMPDIR": str(anchors)})
+            check(f"refuses {what}",
+                  r.returncode == 0 and "this session own anchor" not in r.stdout
+                  and "FALLBACK" in r.stdout, r.stdout.strip()[:90])
 
         # DEPENDENCY REMOVED: no session id, and a search root with no install.
         nowhere = tmp / "nowhere"
@@ -327,13 +357,11 @@ def arm_commands() -> None:
         check("3 arm says nothing was loaded", "nothing was loaded" in r.stdout)
 
         # slice file missing but root fine -> still 3, never 0
-        halfroot = tmp / "halfroot"
+        halfroot = plugins / "halfroot"
         (halfroot / "methodology-content").mkdir(parents=True)
         shutil.copytree(REPO_ROOT / ".claude-plugin", halfroot / ".claude-plugin")
-        (anchors / "claude-methodology-anchor-half").write_text(
-            f"T0=1\nLAST_HEARTBEAT=0\nTIER=T4\nPLUGIN_ROOT={halfroot.as_posix()}\n",
-            encoding="utf-8")
-        r = sh(slice_block, env={"CLAUDE_CODE_SESSION_ID": "half", "TMPDIR": str(anchors)})
+        anchor("half", halfroot)
+        r = sh(local, env={"CLAUDE_CODE_SESSION_ID": "half", "TMPDIR": str(anchors)})
         check("3 when the root resolves but the slice is missing", r.returncode == 3)
 
         # no command file may still carry the old resolver or the old prose

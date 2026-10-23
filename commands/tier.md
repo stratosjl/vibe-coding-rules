@@ -31,13 +31,22 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
-   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+   # The anchor sits in a temp dir that may be shared (/tmp on Linux), and the
+   # root it names decides which script runs below. So use an anchor only if
+   # this user owns it (-O; on Git Bash -O is always true, but Windows temp is
+   # per-user), and accept its root only inside the search dir, compared after
+   # resolving symlinks and "..". Anything else falls through to the paths below.
+   VC_ROE_S=$(cd "$VC_ROE_SEARCH" 2>/dev/null && pwd -P)
+   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$VC_ROE_S" ]; then
      for d in /tmp "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}"; do
        [ -n "$d" ] || continue
        a="$d/claude-methodology-anchor-$CLAUDE_CODE_SESSION_ID"
-       [ -f "$a" ] || continue
-       VC_ROE_ROOT=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
-       if [ -n "$VC_ROE_ROOT" ]; then VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break; fi
+       [ -f "$a" ] && [ -O "$a" ] || continue
+       r=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
+       [ -n "$r" ] || continue
+       r=$(cd "$r" 2>/dev/null && pwd -P) || continue
+       case "$r/" in "$VC_ROE_S"/*) ;; *) continue ;; esac
+       VC_ROE_ROOT="$r"; VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break
      done
    fi
    if [ -z "$VC_ROE_ROOT" ] || [ ! -d "$VC_ROE_ROOT/methodology-content" ]; then
@@ -84,13 +93,22 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
-   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+   # The anchor sits in a temp dir that may be shared (/tmp on Linux), and the
+   # root it names decides which script runs below. So use an anchor only if
+   # this user owns it (-O; on Git Bash -O is always true, but Windows temp is
+   # per-user), and accept its root only inside the search dir, compared after
+   # resolving symlinks and "..". Anything else falls through to the paths below.
+   VC_ROE_S=$(cd "$VC_ROE_SEARCH" 2>/dev/null && pwd -P)
+   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$VC_ROE_S" ]; then
      for d in /tmp "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}"; do
        [ -n "$d" ] || continue
        a="$d/claude-methodology-anchor-$CLAUDE_CODE_SESSION_ID"
-       [ -f "$a" ] || continue
-       VC_ROE_ROOT=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
-       if [ -n "$VC_ROE_ROOT" ]; then VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break; fi
+       [ -f "$a" ] && [ -O "$a" ] || continue
+       r=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
+       [ -n "$r" ] || continue
+       r=$(cd "$r" 2>/dev/null && pwd -P) || continue
+       case "$r/" in "$VC_ROE_S"/*) ;; *) continue ;; esac
+       VC_ROE_ROOT="$r"; VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break
      done
    fi
    if [ -z "$VC_ROE_ROOT" ] || [ ! -d "$VC_ROE_ROOT/methodology-content" ]; then
@@ -151,13 +169,22 @@ If `$ARGUMENTS` matches one of `T0`, `T1`, `T2`, `T3`, `T4` (**case-insensitivel
    # --- test-exit-contract.py ARM 5 fails the build if a copy drifts). Resolves the
    # --- root THIS SESSION loaded, not the highest version present on disk.
    VC_ROE_ROOT=""; VC_ROE_VIA=""; VC_ROE_ANCHOR=""
-   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+   # The anchor sits in a temp dir that may be shared (/tmp on Linux), and the
+   # root it names decides which script runs below. So use an anchor only if
+   # this user owns it (-O; on Git Bash -O is always true, but Windows temp is
+   # per-user), and accept its root only inside the search dir, compared after
+   # resolving symlinks and "..". Anything else falls through to the paths below.
+   VC_ROE_S=$(cd "$VC_ROE_SEARCH" 2>/dev/null && pwd -P)
+   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$VC_ROE_S" ]; then
      for d in /tmp "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}"; do
        [ -n "$d" ] || continue
        a="$d/claude-methodology-anchor-$CLAUDE_CODE_SESSION_ID"
-       [ -f "$a" ] || continue
-       VC_ROE_ROOT=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
-       if [ -n "$VC_ROE_ROOT" ]; then VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break; fi
+       [ -f "$a" ] && [ -O "$a" ] || continue
+       r=$(sed -n 's/^PLUGIN_ROOT=//p' "$a" | head -1)
+       [ -n "$r" ] || continue
+       r=$(cd "$r" 2>/dev/null && pwd -P) || continue
+       case "$r/" in "$VC_ROE_S"/*) ;; *) continue ;; esac
+       VC_ROE_ROOT="$r"; VC_ROE_ANCHOR="$a"; VC_ROE_VIA="this session own anchor"; break
      done
    fi
    if [ -z "$VC_ROE_ROOT" ] || [ ! -d "$VC_ROE_ROOT/methodology-content" ]; then
