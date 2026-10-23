@@ -4,6 +4,112 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.27.0
+
+Minor. Two new mandatory rules, the repairs from an 84-finding review of the plugin, native Codex continuation checks, and a publish-audit fix for remotes not named `origin`. New rules: at T2 (inherited by T3 and T4), a check that cannot run must exit differently from one that ran; at T3 (inherited by T4), a multi-agent run must be durable by construction. Changed exit codes on several helpers, a new `PLUGIN_ROOT` field in the session anchor, and a publish gate that blocks when any of its tools could not run. No change to tier thresholds, the heartbeat cadence or the chat-claim primitive.
+
+### A. The exit-code contract, and commands that resolve the bundle this session loaded
+
+#### 1. A check's CANNOT-RUN must not render as its PASS or its FOUND-A-DEFECT
+
+New at T2, so T3 and T4 inherit it. The convention: `0` ran and nothing is wrong, `1` ran and found a defect, `2` usage error (the caller is wrong), `3` NOT-RUNNABLE (a dependency is missing, the environment is wrong). Codes that already discriminate are not renumbered; `3` is added where a collision existed. T4 element 1 gains the matching obligation: a regression floor reports cannot-run as a third verdict and states how many checks could not run.
+
+**Measured 2026-09-04** on a T4 regulated project: a guard committed under `bin/` inserted a session-scoped temp path on `sys.path` and imported a module that existed nowhere else on the machine, written by a session that had ended three weeks earlier. It worked only because the OS had not swept the tree. `ModuleNotFoundError` exits 1 and the guard used 1 for "this document has a structural defect", so on the day the temp is swept a regression floor reports a failing **document** and the investigation starts in the wrong place.
+
+vc-roe carried the same defect in four places of its own, all fixed here:
+
+- `bin/anchor-rewrite.sh` exited **0** when no session anchor resolved. Its own header said so. A caller running `anchor-rewrite.sh T4 && echo ok` reported success while heartbeat enforcement was never armed. Now `3`, with `2` for a bad argument.
+- Every tier command printed *"falling back to general familiarity with T4 prescriptions"* and exited **0** when the plugin root did not resolve. That is a methodology loader folding cannot-run into pass: the session then carries the T4 first-line rule on every reply while holding none of T4's rules. Now `3` with a NOT-RUNNABLE banner, and the surrounding prose tells the assistant to stop rather than to improvise.
+- `hooks/session-start.py` `load_slice()` returned a one-line comment, `# Methodology slice for T4 not found at ...`, injected verbatim as the session's rule set under a header reading "Methodology in force: T4". Now a banner that states no rules are in force and instructs the assistant to say so in its first reply.
+- `bin/sync-user-aliases.sh` returned `1` for "the plugin cache is not installed", colliding with a real failure. Now `3`.
+
+#### 2. A command resolves the bundle THIS SESSION loaded, not the newest one on disk
+
+The hooks receive the correct root from the harness as `${CLAUDE_PLUGIN_ROOT}`. A slash command's Bash block cannot see that variable (measured: `env` from a command block lists `CLAUDE_CODE_*` and no `CLAUDE_PLUGIN_ROOT`), so every command hand-rolled `find ~/.claude/plugins -name anchor-rewrite.sh | sort -V | tail -1`, which returns the **highest version present**, not the one in use.
+
+Measured 2026-09-04: a session ran the v1.23.0 slice rendered by the hook while `/tier` resolved v1.22.0 from the plugin cache and instructed the assistant to treat it as authoritative for the rest of the session, silently dropping a mandatory T4 obligation. The command printed slice text and exited 0.
+
+`hooks/session-start.py` now stamps `PLUGIN_ROOT` and `PLUGIN_VERSION` into the session anchor, POSIX-form so Git Bash can stat it, and **augments** an anchor written by an older version rather than replacing it, so a session upgraded mid-life converges. The commands read it, fall back to a known managed-install path, then to the disk scan, and say in their output which of the three answered. The eighteen hand-copied resolvers become one, byte-identical across all six command files and enforced by a lockstep arm.
+
+#### 3. `CLAUDE_CODE_SESSION_ID` is exposed, and it dissolves a documented race
+
+`bin/anchor-rewrite.sh` carried a three-layer session-resolution heuristic whose header recorded *"CLAUDE_SESSION_ID env var probed at session 13 and confirmed NOT exposed to slash-command Bash"*, plus an accepted residual cross-process race on the shared marker file. The probe used the wrong **name**. The variable is `CLAUDE_CODE_SESSION_ID`, it is exposed, and it matched the running session's anchor exactly. It is per-process, so no other window can clobber it and the race dissolves rather than being mitigated.
+
+Added as Layer 0. Layers 1 to 3 are unchanged and still run, because this is measured on one node in one session: a harness build that does not export the variable falls through to exactly the previous behaviour. The anchor directory is now probed across `/tmp`, `$TMPDIR`, `$TEMP` and `$TMP` rather than hard-coded, which is the OBS-MET-AK divergence handled at the reader as well as the writer.
+
+#### 4. Smaller repairs found while doing the above
+
+- `PLUGIN_ROOT` resolution treated a **set-but-empty** `CLAUDE_PLUGIN_ROOT` as a value, because `os.environ.get(k, default)` returns `""` rather than the default. `Path("")` is `Path(".")`, so `detection-rules.json` and the slice directory resolved against the CWD. Empty and whitespace now count as unset, and a supplied root is accepted only when it actually contains the bundle.
+- The addon seam caught `Exception`, which cannot catch a pyo3 `PanicException` (MRO `[PanicException, BaseException, object]`). An addon importing a Rust-backed wheel could panic straight through the one block whose stated contract is "never affects session start". Now `BaseException` with `KeyboardInterrupt`/`SystemExit` re-raised.
+- `bin/sync-user-aliases.sh` had a dead branch: `CACHE_BASE_VCROE` and `CACHE_BASE_LEGACY` were byte-identical strings after the v1.0.0 rename rewrote both sides, so the `elif` was unreachable and the error message named the same path twice.
+
+#### New guard
+
+`test-exit-contract.py`, 43 assertions over six arms, `--self-test` proving three mutations each turn it red. Every arm that asserts `3` does so by **removing the dependency**, not by corrupting the input, because corrupting the input exercises the arm that already works. It writes nothing outside `tempfile.mkdtemp()`: during development its cannot-run arm resolved to a leftover `ktest-*` anchor from the existing suite and reported a false `0`, which is the reason the seam it uses exists.
+
+### B. Multi-agent durability, and the 84-finding review
+
+#### 1. A multi-agent run is durable by construction, or it is not evidence
+
+New at T3 as item 14, so T4 inherits it. T2 item 12 already says when to reach for a subagent; nothing said what happens when a run of them is interrupted, and on any fan-out worth orchestrating that is the normal case.
+
+Ten lettered clauses, each measured on this repository's own review of 2026-09-04 across four orchestrated runs. The load-bearing ones:
+
+- **An agent writes its result to a named path as its last action, and also checkpoints into its own transcript as it goes.** These are different obligations. The first makes a finished agent durable; only the second makes an interrupted run resumable rather than restartable, because the final write happens once and a hard kill lands before it. Measured both ways in one day: a run stopped with about ten agents in flight lost every one of their results, because those existed only as pending return values; and a later run reported an agent as FAILED on an unreachable API when that agent had already written three complete adjudications to disk. Once instructed, 62 of 62 agents in one run and 52 of 52 in the next complied.
+- **A run killed by capacity looks exactly like a run wedged by its own shape, and the needle you search for decides which one you see.** A fan-out of 85 verifiers was written up as a structural stall on the strength of two true zeros, no occurrence of "API Error" and none of "usage limit" across its 94 transcripts. The harness writes "You've hit your session limit", which neither needle matches. Re-measured against the records the harness itself flags as errors: 71 of the 94 agents carried that line, 22 returned a result, 1 did neither. It died of capacity, and this fleet had already recorded the same cause once before without recognising it the second time. Enumerate a harness's own error records rather than grepping for a phrase you expect, and state the search string beside any zero. Preferring a pipeline to a barrier remains sound design reasoning and is kept as such, labelled in the slice as reasoning rather than as a measurement.
+- **Never signal "nothing to do here" with a null return from a pipeline stage, and reconcile the agent count against items times stages.** Where null marks a dead agent, a stage returning it drops the item silently. Measured: 4 agents ran where 50 were expected and 22 of 24 files never reached the stage that does the work, with no error raised on their behalf and no dropped item named in the summary.
+- **Assignment integrity is asserted by the agent, in its own briefing, before it works.** 74 of 88 verdicts in one run were rendered by an agent that owned a different file from the one the finding was about, affecting 27 of 27 agents. 11 of the 27 named the fault in their report to the operator and 10 of those declined to edit anything, but NOT ONE declined to judge: all 88 verdicts were rendered regardless, so seeing it did not stop anybody. That also explains that run's headline of 78 of 79 confirmed: an agent judging a claim about a file it is not reading confirms the claim as written. The run written to correct it reproduced it, because the orchestrator hand-transcribed a grouping a program had already produced, so the rule is that the grouping is passed through unedited and the receiver proves it.
+- **The seat that judges is not the seat that fixes**, and a fourth seat that made no edit tries to break the fix. Worth, measured here: the refuters killed 13 of 69 confirmations, the review seats caught three defects that an earlier unverified edit had put into a live hook, before any fixer touched it, and the verifying seats then caught two defective fixes.
+- **Where agents own files in parallel, any statement one file makes about another needs a settle point.** File ownership prevents write conflicts and does nothing about read staleness: five of the six entries in one file's regression list came from one mechanism, a claim about a companion file that was true of the branch and of the staged index and false once the companion's own seat had finished. Three were comments and two were operator-facing text the hook prints on every push, which is the worse half. The sixth entry was labelled an observation needing no action.
+
+#### 2. What the review found, and what landed
+
+An 8-dimension review of commit `222bebc` produced 84 findings. Re-triaged with correct per-file assignment, judged and then adversarially refuted from a second seat: **10 already closed before a fixer saw them, 13 refuted, 61 live.** Of the 10, 8 had been closed by the exit-code work in part A and 2 (F005 and F008) by the reviewed import this release also lands. Those 61, plus 12 amendments to a previously unverified edit and 3 defects that edit had introduced, went to one fixing seat per file and then to an independent verifying seat.
+
+Outcome: 76 fixed rows. Three of those, in one file, are the same three changes counted twice, because the orchestrator issued those hunks once as amendments and once as introduced defects, so the distinct repairs number 73; 2 declined as describing a deliberate control rather than a defect; and 30 recorded for the operator because the remaining half of the fix lives in a file that seat did not own. Verification returned 5 SOUND, 17 SOUND_WITH_RESERVATION and 2 DEFECTIVE, both of the latter repaired and re-proven before this entry was written.
+
+The substantive repairs cluster in the publish gate and the SessionStart hook, and most of them are the part A exit contract reaching one layer further in: a tool that could not run no longer renders as a tool that ran and found nothing.
+
+#### 3. The publish gate now blocks on an incomplete audit
+
+`bin/publish-audit-combined.sh` gains a `NOTRUN` status with its own counter, and unlike the `WARN` counter it replaces, the exit decision reads it: any tool that did not run exits **3**, this plugin's NOT-RUNNABLE code, and the push is blocked. Before, a machine without `gitleaks` recorded two WARN rows, exited 0, and printed `aggregate clean. Safe to push.` with the history-walking credential scanner retired, its working-tree sibling retired with it, and nothing saying so.
+
+`.githooks/pre-push` gains a matching `rc=3` arm. This is a deliberate coupling to that contract rather than a catch-all: `rc=3` is the ordinary path on a machine without `gitleaks`, which is a missing dependency and not a broken harness, and the old catch-all told that operator to repair a harness that had worked. Every non-zero still blocks, so the arm corrects the diagnosis and never opens the gate. Proven across `rc` 0, 1, 2, 3 and 127 in a private fixture: only 0 proceeds.
+
+`test-audit-patterns.py` no longer prints the operator's private DENY patterns verbatim on failure, and the credential heuristic now reports its denominator, preserves `git grep`'s exit code, and records NOTRUN rather than a confident `0 hits` when the scan could not run at all.
+
+#### 4. Smaller repairs
+
+- The regulatory-keyword matcher is anchored on word boundaries. It was an unanchored substring, so `LIA` inside `compliance` scored a second hit and one word could carry a project to C2. `README.md` documented the old behaviour and now documents the new.
+- `hooks/session-start.py` emits a loud NOT-RUNNABLE banner through `additionalContext` when `load_rules()` or `detect_tier()` fails, instead of returning 0 with zero bytes written, which was indistinguishable from a hook that ran and had nothing to add.
+- `bin/claude-md-sentinel.py` separates an argparse usage error from a write failure; both were exit 2 while the docstring described only the second.
+- `CONTRIBUTING.md` no longer documents a DENY pattern by quoting it, which made the file match the gate and blocked every push.
+- `commands/tier.md` gains two NOT-RUNNABLE exit-3 arms on the project-tier-floor write, so `/vc-roe:tier` now reports a floor it could not persist instead of returning success. Its four siblings, `raise-tier.md`, `lower-tier.md` and the two Kimi mirrors, do not yet carry the same arms, so the guarantee currently holds for one of five commands.
+- Four files were normalised back to LF after a fix seat rewrote them with CRLF.
+
+### C. Native Codex continuation checks
+
+`codex/` adds a Stop-hook integration for Codex that checks an explicitly registered work contract when a turn ends: missing deliverables or failed required checks keep the contract incomplete, and if authorised work can proceed the hook requests continuation. It does not invoke Claude hooks or load Claude methodology slices. `codex/install_continuation.py` copies the runtime into `CODEX_HOME/vc-roe/runtime/`, backs up the existing hook file and merges five handlers without touching other hooks; `codex/test_continuation.py` runs before installation and `codex/probe_continuation.py` holds the native probes. `policy/shared.md` gains the matching instruction for work with several deliverables. `codex/README.md` states the limits: a Stop block cannot retract a message already shown, and enforcement is inactive until work is registered.
+
+### D. The public-state audit resolves its remote by name
+
+`bin/publish-audit-state.sh` read `remote.origin.url` and nothing else. On a clone whose remote is named `github` that returned empty, and the empty value fell through to a hard-coded URL, so the audit could compare a repository it had not been pointed at and still report PASS. It now tries `github`, then `origin`, and prints the remote that answered. A private-forge remote is deliberately not tried, because this audit checks the public state and an anonymous clone of a private forge cannot succeed. `CONTRIBUTING.md`, `.githooks/pre-push` and the harness comments now name `github`.
+
+### How this release meets v1.26.0
+
+- `hooks/stop.py`: the re-entrancy bound in part B (F024) originally stood down whenever `stop_hook_active` was true. The harness sets that field when ANY Stop hook blocked, and `/goal` blocks on every continuation, so the bound would have switched the silent-stop blocker off for a whole goal run. The blocker now writes a per-session marker when it blocks, and every Stop event consumes it: it stands down only when the field is true AND the marker shows the block was its own. A `/goal` continuation is checked normally. If the marker cannot be written the blocker does not block, since a block it cannot bound is the loop F024 removed. The logged `stop_hook_active` value stays raw, as in v1.26.0. Three new `test-heartbeat.py` arms cover this: a `/goal`-style continuation still blocks, the hook's own re-entry stands down once and the next continuation is checked again, and a leftover marker without the field does not suppress a block. Against the field-only bound, the first two fail.
+- `commands/tier.md` and `commands-kimi/tier.md`: the part A resolver replaces the old plugin lookup, and the v1.25.1 uppercase `$TIER` is reapplied in every shell block, including the part B floor write. An `anchor-rewrite.sh` refusal now exits 2 under the contract, and that arm prints the v1.25.1 REFUSED wording.
+- `methodology-content/T4.md`: element 1 keeps the v1.24.0 denominator wording and gains the NOT-RUNNABLE paragraph.
+
+### Evidence
+
+Run on the Windows node only (Python 3.14.8); not run on Linux.
+
+- 12 suites (11 top-level plus `codex/test_continuation.py`): 11 exit 0. `test-chat-claim.py` exits 3, NOT-RUNNABLE, because one case reads `/proc/sys/kernel/random/boot_id`, which Windows does not have; with `--allow-skips` it exits 0. Before this release that case was skipped and the suite still reported a pass.
+- `test-exit-contract.py`: 43 of 43, `--self-test` passes. Its hygiene arm (ARM 6) was red at the commit that introduced it: it flagged its own two control strings, a `sys.path` example quoted in its docstring, and the addon seam's `sys.path.append`, whose exemption marker sat outside the arm's eight-line window. Fixed at the source, not by loosening the arm: the control strings carry the exemption marker, the `sys.path` check reads code lines only (as the path check beside it already did), and the marker now sits next to the `append`. A planted, unmarked out-of-repo `sys.path.insert` turns the arm red again.
+- `test-heartbeat.py`: 22 of 22, including the three F024 arms above.
+- `bin/publish-audit-combined.sh`: 7 PASS, 0 NOTRUN, 0 FAIL. The state audit cloned `https://github.com/stratosjl/vibe-coding-rules.git`, resolved from the `github` remote.
+
 ## v1.26.0
 
 Minor. Support for Claude Code's `/goal`, which keeps a session working until a small model, reading only the conversation, judges a condition met. The opening prompts this methodology already writes end in a list of checks, which is what a goal needs as its "done" test. Three things stood in the way, each measured or read from the documentation on 2026-10-23: recent opening prompts run to 4,494 to 5,892 characters against a 4,000-character cap on the condition; the evaluator runs no command and reads no file, so a check written as an assertion cannot be judged; and a goal is built not to stop, while T4's confirmation gates are built to stop.
