@@ -34,7 +34,11 @@ DEFAULT_CONTRACT = Path(__file__).resolve().parent.parent / "policy" / "assuranc
 REVISION_RE = re.compile(r"^[0-9a-f]{7,40}(\+dirty:[0-9a-f]{12,64})?$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FILLER = {"and", "by", "reviewed", "review", "model", "harness", "different", "second",
-          "another", "a", "an", "the", "with", "using", "via", "family", "other"}
+          "another", "a", "an", "the", "with", "using", "via", "family", "other", "it", "this",
+          "pro", "mini", "flash", "cli", "code", "ultra", "max", "turbo", "preview", "latest",
+          "agent", "assistant", "ai", "chat"}
+VERSION_TOKEN_RE = re.compile(r"^[a-z]?\d[a-z0-9]*$")
+SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
 NOTE = ("note: this check is structural; it does not prove that a review was "
         "independent or that a restore succeeded")
 
@@ -96,6 +100,13 @@ def parse_record(path: Path, contract: dict) -> list[dict[str, str]]:
         i += 1
     if len(table) < 2:
         raise RecordError(f"{path}: no '## Assurance' table under the heading")
+    if not SEPARATOR_RE.match(table[1].strip()):
+        raise RecordError(f"{path}: the '## Assurance' table has no separator row under its header")
+    j = i
+    while j < len(lines) and not lines[j].startswith("#"):
+        if lines[j].lstrip().startswith("|"):
+            raise RecordError(f"{path}: more than one table under '## Assurance'")
+        j += 1
     columns = contract["columns"]
     header = split_cells(table[0])
     if header != columns:
@@ -114,16 +125,18 @@ def present(value: str) -> bool:
 
 
 def same_revision(a: str, b: str) -> bool:
-    a, b = a.split("+dirty:")[0].lower(), b.split("+dirty:")[0].lower()
-    shorter = min(len(a), len(b))
-    return shorter >= 7 and a[:shorter] == b[:shorter]
+    """Commits match on a prefix of at least 7 characters either way; a dirty
+    tree matches only the same dirty digest, never its clean commit."""
+    (ca, _, da), (cb, _, db) = a.lower().partition("+dirty:"), b.lower().partition("+dirty:")
+    shorter = min(len(ca), len(cb))
+    return shorter >= 7 and ca[:shorter] == cb[:shorter] and da == db
 
 
 def harness_only(basis: str, contract: dict) -> bool:
     text = " " + re.sub(r"[^a-z0-9]+", " ", basis.lower()) + " "
     for name in sorted(contract.get("harness_names", []), key=len, reverse=True):
         text = text.replace(f" {name} ", " ")
-    return all(word in FILLER for word in text.split())
+    return all(word in FILLER or VERSION_TOKEN_RE.match(word) for word in text.split())
 
 
 def validate(rows: list[dict[str, str]], contract: dict, *, tier: str | None = None,
@@ -188,8 +201,12 @@ def validate(rows: list[dict[str, str]], contract: dict, *, tier: str | None = N
                 if not present(r[col]):
                     bad(f"accepted risk needs {col.lower()}")
             trig = r["Trigger"].strip()
-            if ISO_DATE_RE.match(trig) and date.fromisoformat(trig) < today:
-                bad(f"accepted risk expired on {trig}")
+            if ISO_DATE_RE.match(trig):
+                try:
+                    if date.fromisoformat(trig) < today:
+                        bad(f"accepted risk expired on {trig}")
+                except ValueError:
+                    bad(f"accepted risk trigger {trig!r} is not a valid date")
         if release and applies == "yes" and status not in ("passed", "accepted-risk"):
             bad(f"applicable and {status}; a release needs it passed or a valid accepted risk")
     if tier:
@@ -262,6 +279,8 @@ def main(argv: list[str]) -> int:
         return self_test()
     if a.record is None:
         ap.error("a record path is required")
+    if a.release and not a.revision:
+        ap.error("--release requires --revision, the revision being released")
     return run(a.record, a.contract, a.tier, a.revision, a.today, a.release)
 
 

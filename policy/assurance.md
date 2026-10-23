@@ -63,7 +63,7 @@ Projects keep assurance in an existing record, such as `open-issues.md` or a rel
 
 Statuses: `planned`, `passed`, `failed`, `blocked`, `stale` (passed once, but at a revision or with inputs that have since changed), `not-applicable`, and `accepted-risk`. An accepted risk needs a reason, an owner and a trigger, and it lapses when its date passes. **An accepted risk is never a passing result**, and a summary must count the two separately.
 
-A row may say `passed` only when its evidence is present, of a kind that can pass that control, observed as `pass`, and bound to the revision being released.
+A row may say `passed` only when its evidence is present, of a kind that can pass that control, observed as `pass`, and bound to the revision being released. Commits match on a prefix of at least seven characters either way. A result recorded on a dirty tree matches only the same dirty digest, never its clean commit, because a dirty tree is changed inputs. A release check therefore always names the revision it releases.
 
 ## What a structural check can and cannot prove
 

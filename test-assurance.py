@@ -159,21 +159,50 @@ def checker_tests() -> None:
     rejects("t3_requires_review_and_restore_decisions", [row("AC-RESTORE")], "--tier", "T3",
             names="AC-REVIEW")
     rejects("release_rejects_open_applicable_control", [row("AC-TRACE", Status="planned", Result="n/a")],
-            "--release", names="AC-TRACE")
+            "--release", R, "1111111", names="AC-TRACE")
 
     print("justified_not_applicable_passes")
     rows = [row("AC-REVIEW"),
             row("AC-RESTORE", Applies="no", Reason="stateless: rebuilt from the repository",
                 Status="not-applicable", Kind="-", Result="n/a", Revision="n/a", Evidence="-")]
-    rc, out = run(record(rows, "justified_not_applicable_passes"), "--tier", "T3", "--release")
+    rc, out = run(record(rows, "justified_not_applicable_passes"), "--tier", "T3", "--release", R, "1111111")
     check(rc == 0, f"justified_not_applicable_passes: exit 0 with --tier T3 --release (rc {rc}: {out.strip()[:160]!r})")
 
     out = accepts("accepted_risk_is_counted_but_not_passed",
                   [row("AC-RESTORE", Status="accepted-risk", Trigger="2027-03-31", Result="n/a")],
-                  "--release", "--today", "2026-10-23")
+                  "--release", R, "1111111", "--today", "2026-10-23")
     check("1 accepted-risk" in out and "0 passed" in out,
           f"accepted_risk_is_counted_but_not_passed: summary counts it apart ({out.strip()[-120:]!r})")
     accepts("t2_record_needs_no_decision_rows", [row("AC-TRACE")], "--tier", "T2")
+
+    # Final-review fixes
+    for basis in ("gpt-5", "Claude Opus 4.1", "Kimi K2", "gemini 2.5 pro", "codex cli", "claude reviewed it"):
+        rejects(f"versioned_model_name_is_not_independence[{basis}]",
+                [row("AC-REVIEW", Independence=basis)], names="AC-REVIEW")
+    print("malformed_trigger_date_is_a_violation")
+    rc, out = run(record([row("AC-RESTORE", Status="accepted-risk", Trigger="2026-13-45", Result="n/a")],
+                         "malformed_trigger"))
+    check(rc == 1 and "not a valid date" in out and "summary:" in out and "Traceback" not in out,
+          f"malformed_trigger_date_is_a_violation: a violation, not a crash (rc {rc}: {out.strip()[-160:]!r})")
+    print("release_requires_revision")
+    rc, out = run(record([row("AC-TRACE", Revision="0000000")], "release_no_revision"), "--release")
+    check(rc == 2 and "--release requires --revision" in out,
+          f"release_requires_revision: exit 2 with the reason (rc {rc}: {out.strip()[-120:]!r})")
+    rejects("dirty_pass_against_clean_revision_is_stale",
+            [row("AC-TRACE", Revision="1111111+dirty:abcdefabcdef")], R, "1111111", names="AC-TRACE")
+    accepts("dirty_pass_matches_the_same_dirty_revision",
+            [row("AC-TRACE", Revision="1111111+dirty:abcdefabcdef")], R, "1111111+dirty:abcdefabcdef")
+    print("second_table_under_one_heading_exits_2")
+    rc, out = run(record([row("AC-TRACE")], "second_table_same_heading", extra="\n" + table([row("AC-TRACE")])))
+    check(rc == 2 and "more than one" in out,
+          f"second_table_under_one_heading_exits_2: exit 2 with the reason (rc {rc}: {out.strip()[:120]!r})")
+    print("missing_separator_row_exits_2")
+    p2 = TMP / "no_separator.md"
+    lines = table([row("AC-TRACE", Result="fail")]).splitlines()
+    p2.write_text("## Assurance\n\n" + "\n".join([lines[0]] + lines[2:]) + "\n", encoding="utf-8")
+    rc, out = run(p2)
+    check(rc == 2 and "separator" in out,
+          f"missing_separator_row_exits_2: exit 2 with the reason (rc {rc}: {out.strip()[:120]!r})")
 
     # Review Focus
     accepts("revision_prefix_matches_both_ways",
@@ -220,6 +249,10 @@ def slices_and_commands_name_only_contract_ids() -> None:
         ids = set(re.findall(r"\bAC-[A-Z]+\b", (ROOT / rel).read_text(encoding="utf-8")))
         if must_name:
             check(bool(ids), f"{rel} names at least one control")
+        if ids and rel.startswith("methodology-content/"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            check("-name assurance.md" in text or "-name check-assurance.py" in text,
+                  f"{rel} names a control and gives a way to find the vc-roe file")
         check(ids <= known, f"{rel} names only contract IDs ({sorted(ids - known)})")
 
 
