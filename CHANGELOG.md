@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## Unreleased
+
+### What changed
+
+- **T4 "Goal runs" rule 1: a T4 goal may run in auto or bypass permissions mode when the gate is an explicit permission rule.** Until now the rule named the permission prompt as the only hard gate and forbade auto mode and bypass. Claude Code documents that explicit `permissions.ask` rules, `deny` rules and denying `PreToolUse` hooks still stop a command in those modes, while allow rules do not. The rule now permits those modes when every confirmation-gated command matches such a rule, asks for each rule to cover every way the command can start (`git -C <dir> push`, flags after the arguments), and requires proof in a fresh `claude -p --dangerously-skip-permissions --output-format json` session: a harmless matching command appears in `permission_denials` and a non-matching control runs. Without such a list the old prohibition stands.
+- **README**, "Working with `/goal`": the same condition in place of "never run a T4 goal in auto mode".
+
+### Evidence
+
+- Measured on Claude Code 2.1.312 in fresh headless bypass sessions: an ask-matched read and the same read inside `true && …` were denied; a non-matching control ran; a forced dry-run push written `git -C <dir> push … --force` was not matched by `git push …` rules and ran (dry run, nothing sent) until `git * push …` forms were added, after which it was denied. Rules written by a running session did not reach that session.
+- `test-session-start-split.py`: T4 still reaches the model in three parts under 9,500 characters.
+
+### Not done
+
+- Not measured: how an ask prompt behaves inside a `/goal` turn.
+- No SessionStart warning yet for a T4 session started in bypass mode with no ask rules.
+
 ## v1.29.0
 
 Minor. Shared assurance controls, implemented from the brief in `docs/proposals/shared-assurance-controls.md`. Four controls are now defined once, in `policy/assurance.md`, and the tier slices, both audit-pass commands and the shared Codex policy refer to that file instead of restating it: requirements-to-test traceability (`AC-TRACE`), independent policy and isolation review (`AC-REVIEW`), tested restoration (`AC-RESTORE`) and revision-bound evidence (`AC-EVIDENCE`).

@@ -122,7 +122,7 @@ To put the old enforcement back, set `VC_ROE_HEARTBEAT_ENFORCEMENT=1` in the env
 
 ## Working with `/goal` (Claude Code, since v1.26.0)
 
-Claude Code's `/goal` keeps a session working until a small model, reading only the conversation, judges a condition met. From T2 up, the opening prompt for the next session ends with a `## Goal` section holding a ready-to-paste `/goal` line (T2 item 17), and its verification checks are written as a command plus the output that passes it (T2 item 5), so the evaluator can judge them from what is shown. At T4 the goal carries a fixed stop-to-ask clause and the confirmation gates rely on permission prompts, so never run a T4 goal in auto mode (T4 "Goal runs").
+Claude Code's `/goal` keeps a session working until a small model, reading only the conversation, judges a condition met. From T2 up, the opening prompt for the next session ends with a `## Goal` section holding a ready-to-paste `/goal` line (T2 item 17), and its verification checks are written as a command plus the output that passes it (T2 item 5), so the evaluator can judge them from what is shown. At T4 the goal carries a fixed stop-to-ask clause and the confirmation gates rely on permission prompts. In auto or bypass mode only explicit `permissions.ask` or `deny` rules and denying `PreToolUse` hooks still stop a command, so run a T4 goal there only with every confirmation-gated command covered by such a rule and proved in a fresh headless session (T4 "Goal runs", rule 1).
 
 Check a prompt's goal block before close:
 
