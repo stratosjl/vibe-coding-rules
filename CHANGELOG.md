@@ -4,6 +4,13 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.30.2
+
+Patch. Test fixes only; no hook changed.
+
+- **`test-hook-log-bound.py`** builds its `sys.path` entry from `REPO_ROOT`, so `test-exit-contract.py` accepts it. v1.30.1 shipped with that suite red (45 pass / 1 fail), found by the floor on a second node.
+- **`test-kimi-adapter.py`** runs against a temporary `HOME`. Two checks wrote claim files into the real `~/.claude/projects`, which left folders behind and failed wherever that path is read-only (2 failures under a sandboxed shell, 0 now).
+
 ## v1.30.1
 
 Patch. The hook log is bounded.

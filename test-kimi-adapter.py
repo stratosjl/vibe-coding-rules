@@ -439,6 +439,23 @@ ALL_TESTS += [("stop-trust-2x", t_stop_trust_2x_escape),
 
 def main() -> int:
     only = sys.argv[1] if len(sys.argv) > 1 else None
+    # Run every test against a throwaway HOME. Claims and the hook log are
+    # written under ~/.claude; against the real home they leave folders behind
+    # in ~/.claude/projects and fail outright where that path is read-only.
+    with tempfile.TemporaryDirectory(prefix="vc-roe-kimi-home-") as home:
+        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+        os.environ["HOME"] = os.environ["USERPROFILE"] = home
+        try:
+            return _run(only)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
+def _run(only) -> int:
     for name, fn in ALL_TESTS:
         if only and name != only:
             continue

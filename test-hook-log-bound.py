@@ -24,7 +24,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent
 WRITERS = [
     "hooks/session-start.py",
     "hooks/stop.py",
@@ -38,9 +38,9 @@ WRITERS = [
 def load(rel: str, home: Path):
     os.environ["HOME"] = str(home)
     os.environ["USERPROFILE"] = str(home)
-    os.environ.setdefault("CLAUDE_PLUGIN_ROOT", str(ROOT))
-    path = ROOT / rel
-    sys.path.insert(0, str(path.parent))
+    os.environ.setdefault("CLAUDE_PLUGIN_ROOT", str(REPO_ROOT))
+    path = REPO_ROOT / rel
+    sys.path.insert(0, str((REPO_ROOT / rel).parent))
     try:
         spec = importlib.util.spec_from_file_location(
             "vcroe_" + rel.replace("/", "_").replace("-", "_").replace(".py", ""), path)
