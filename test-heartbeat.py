@@ -877,6 +877,64 @@ def case_ups_under_cadence_is_ok(tmp: Path) -> tuple[bool, str]:
         _cleanup(sid)
 
 
+def _ptu_advance_for(tmp: Path, marker_text: str) -> tuple[int, int, int]:
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 16 * 60, last_hb=0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "open"},
+            {"role": "assistant", "text": "status\n" + marker_text},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "assistant", "text": "continuing work"},
+        ])
+        rc = run_post_tool_use(sid, tx)
+        return rc, int(read_anchor(sid).get("LAST_HEARTBEAT", "0")), now
+    finally:
+        _cleanup(sid)
+
+
+def case_sentinel_without_m_advances(tmp: Path) -> tuple[bool, str]:
+    """v1.30.3: [heartbeat-fired:T+15] (no "m") still advances the clock."""
+    rc, last_hb, now = _ptu_advance_for(tmp, "[heartbeat-fired:T+15]")
+    if rc == 0 and last_hb >= now - 2:
+        return True, "OK (marker without m advanced LAST_HEARTBEAT)"
+    return False, f"FAIL: rc={rc} LAST_HEARTBEAT={last_hb}, expected ~{now}"
+
+
+def case_free_text_heartbeat_does_not_advance(tmp: Path) -> tuple[bool, str]:
+    """v1.30.3 control: prose like "Heartbeat (T+15m)" is not the marker."""
+    rc, last_hb, now = _ptu_advance_for(tmp, "Heartbeat (T+15m): on track.")
+    if rc == 0 and last_hb == 0:
+        return True, "OK (free-text heartbeat left LAST_HEARTBEAT at 0)"
+    return False, f"FAIL: rc={rc} LAST_HEARTBEAT={last_hb}, expected 0"
+
+
+def case_ups_due_tag_names_marker(tmp: Path) -> tuple[bool, str]:
+    """v1.30.3: a DUE tag names the exact marker; an OK tag does not."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        now = int(time.time())
+        write_anchor(sid, t0=now - 45 * 60, last_hb=0, tier="T4")
+        due = run_ups(sid, enforce=False)
+        if "marker: [heartbeat-fired:T+45m]" not in due:
+            return False, f"FAIL: DUE tag lacks the marker: {due!r}"
+        if DEMAND in due or ", DUE]" not in due:
+            return False, f"FAIL: DUE tag changed shape or demands: {due!r}"
+    finally:
+        _cleanup(sid)
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        write_anchor(sid, t0=int(time.time()) - 20 * 60, last_hb=0, tier="T4")
+        ok = run_ups(sid, enforce=False)
+        if "marker:" in ok:
+            return False, f"FAIL: OK tag carries the marker: {ok!r}"
+        return True, "OK (DUE names the marker, OK stays bare)"
+    finally:
+        _cleanup(sid)
+
+
 def main() -> int:
     global ANCHOR_DIR
     cases = [
@@ -903,6 +961,12 @@ def main() -> int:
          case_ups_enforcement_switch_restores_demand),
         ("20 min is under the 30 min cadence (v1.20.0 I-9)",
          case_ups_under_cadence_is_ok),
+        ("marker without m advances (v1.30.3)",
+         case_sentinel_without_m_advances),
+        ("free-text heartbeat does not advance (v1.30.3 control)",
+         case_free_text_heartbeat_does_not_advance),
+        ("DUE tag names the marker, OK does not (v1.30.3)",
+         case_ups_due_tag_names_marker),
         ("stop logs stop_hook_active=true (v1.26.0)",
          case_stop_logs_stop_hook_active_true),
         ("stop logs stop_hook_active=null when absent (v1.26.0)",

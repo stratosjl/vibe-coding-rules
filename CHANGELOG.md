@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.30.3
+
+Patch. A heartbeat marker written slightly wrong no longer leaves the clock stuck, and a due clock tag says what to write.
+
+### What changed
+
+- **The marker matches with or without the trailing `m`.** `hooks/stop.py` and `hooks/post-tool-use.py` accept `[heartbeat-fired:T+<n>]` as well as `[heartbeat-fired:T+<n>m]`. Free text such as "Heartbeat (T+32m)" still does not count.
+- **A DUE clock tag names the marker.** When a heartbeat is due, the UserPromptSubmit and PostToolUse tags end with `marker: [heartbeat-fired:T+<n>m]`, with the current minute. An OK tag is unchanged, and nothing is demanded (v1.20.0 behaviour kept).
+
+### Evidence
+
+- vc-roe-private OBS-vcroe-heartbeat-ledger-lag-01 (2026-06-07) recorded a heartbeat that never advanced the clock, quoting the marker as `[heartbeat-fired:T+103]`, without `m`. Its two candidate fixes (PostToolUse transcript grep, rate limit) had shipped on 2026-05-09 in v1.1.1 and v1.1.2, so the format is the remaining explanation. Not proven: that transcript was not re-read.
+- 2026-10-31, ASUS: a session wrote "Heartbeat (T+32m)" and "(T+39m)" in prose; `last-heartbeat` stayed at T+0m.
+- `test-heartbeat.py`: three new cases, 25 in all with 0 misses. Against the v1.30.2 hooks two of them fail; the third is a control that passes either way.
+
 ## v1.30.2
 
 Patch. Test fixes only; no hook changed.

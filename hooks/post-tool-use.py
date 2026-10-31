@@ -116,7 +116,7 @@ HEARTBEAT_ENFORCEMENT = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 INFORMATIONAL_STATUS = {"OK": "OK", "OVERDUE": "DUE", "OVERDUE-2X": "DUE-2X"}
 
-SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m\]")
+SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m?\]")
 
 # Tail window for the agent-loop transcript walk. The walk halts at the first
 # true user-prompt boundary, so it only ever needs the current agent loop:
@@ -1303,6 +1303,9 @@ def main() -> int:
         f"last-heartbeat: T+{last_hb_display}m | "
         f"next-due: T+{next_due_min}m, {tag_status}] (PostToolUse)"
     )
+    if status != "OK":
+        # A heartbeat written in any other form leaves the clock where it is.
+        clock_tag += f" marker: [heartbeat-fired:T+{elapsed_t0_min}m]"
 
     if not HEARTBEAT_ENFORCEMENT:
         # I-9: informational only. The clock still surfaces during long

@@ -233,6 +233,9 @@ def main() -> int:
         f"last-heartbeat: T+{last_hb_display}m | "
         f"next-due: T+{next_due_min}m, {tag_status}]"
     )
+    if status != "OK":
+        # A heartbeat written in any other form leaves the clock where it is.
+        clock_tag += f" marker: [heartbeat-fired:T+{elapsed_t0_min}m]"
 
     if not HEARTBEAT_ENFORCEMENT:
         # I-9: informational only. Emit the clock, demand nothing. The

@@ -187,7 +187,7 @@ MODE_READER = "reader"
 MODE_WRITER = "writer"
 DEFAULT_WRITER_IDLE_DEMOTE_SECONDS = 1800  # 30 min per s68 operator decision
 
-SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+\d+m\]")
+SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+\d+m?\]")
 
 # I-9 reversibility switch (v1.20.0); see the module docstring and
 # user-prompt-submit.py. False = a missing sentinel is an observation, not a
