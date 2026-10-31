@@ -119,6 +119,7 @@ PLUGIN_ROOT_PROVENANCE = (
 DETECTION_RULES_PATH = PLUGIN_ROOT / "detection-rules.json"
 CONTENT_DIR = PLUGIN_ROOT / "methodology-content"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
+LOG_MAX_BYTES = 150_000
 
 
 def _resolve_plugin_version() -> str:
@@ -809,6 +810,13 @@ def load_slice(tier: str) -> str:
 def append_log(entry: dict[str, Any]) -> None:
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Keep the log bounded: at LOG_MAX_BYTES move it to .1 (replacing
+            # the previous one) and start fresh, so both stay under ~300 KB.
+            if LOG_PATH.stat().st_size >= LOG_MAX_BYTES:
+                os.replace(LOG_PATH, LOG_PATH.with_name(LOG_PATH.name + ".1"))
+        except OSError:
+            pass
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:

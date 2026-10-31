@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.30.1
+
+Patch. The hook log is bounded.
+
+### What changed
+
+- **`~/.claude/methodology-hook.log` no longer grows without limit.** Every hook appended one JSON line per run and nothing trimmed the file. Each of the six writers (five Claude hooks and the Kimi adapter) now moves the log to `methodology-hook.log.1` once it reaches 150,000 bytes, replacing any earlier `.1`, and starts a fresh file. The two files together stay under about 300 KB. Older lines than the previous `.1` are dropped; the log is diagnostic, not a record.
+
+### Evidence
+
+- Measured 2026-10-31: 6,976,203 bytes on one node and 5,064,285 on another.
+- `test-hook-log-bound.py` (new): for each writer, no rotation below the cap, a byte-identical `.1` and a one-line fresh log at the cap, and a control with the cap disabled that does not rotate. Against the v1.30.0 hooks it reports 0 pass / 6 fail.
+
+### Not done
+
+- An existing oversized log is rotated on the first hook run after upgrading, so the `.1` from that run holds the whole old file once.
+
 ## v1.30.0
 
 Minor. A T4 goal may run in auto or bypass mode when every confirmation-gated command is covered by an explicit ask or deny rule.

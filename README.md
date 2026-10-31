@@ -147,7 +147,7 @@ To pick up a new version cleanly:
 
 ## Logs
 
-Every hook run logs to `~/.claude/methodology-hook.log` (one JSON line per run). Useful for diagnosing missing methodology context.
+Every hook run logs to `~/.claude/methodology-hook.log` (one JSON line per run). At 150 KB the log moves to `methodology-hook.log.1` and a fresh one starts, so the pair stays under about 300 KB. Useful for diagnosing missing methodology context.
 
 Sample line:
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -49,6 +50,7 @@ def _resolve_plugin_version() -> str:
 
 KIMI_ADAPTER_VERSION = _resolve_plugin_version()
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
+LOG_MAX_BYTES = 150_000
 HOOKS_DIR = Path(__file__).resolve().parent.parent  # the Claude hook modules live here
 
 # PROBE DECISIONS (the Task-1 probe notes, archived outside this repo).
@@ -63,6 +65,13 @@ _PENDING_DIR = Path(tempfile.gettempdir())
 def append_log(entry: dict[str, Any]) -> None:
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Keep the log bounded: at LOG_MAX_BYTES move it to .1 (replacing
+            # the previous one) and start fresh, so both stay under ~300 KB.
+            if LOG_PATH.stat().st_size >= LOG_MAX_BYTES:
+                os.replace(LOG_PATH, LOG_PATH.with_name(LOG_PATH.name + ".1"))
+        except OSError:
+            pass
         entry.setdefault("harness", "kimi")
         entry.setdefault("routine_version", KIMI_ADAPTER_VERSION)
         with open(LOG_PATH, "a", encoding="utf-8") as f:

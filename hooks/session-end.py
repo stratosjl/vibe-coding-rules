@@ -24,6 +24,7 @@ Pure stdlib. Never throws. Logs to ~/.claude/methodology-hook.log.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -68,6 +69,7 @@ def _resolve_plugin_version() -> str:
 ROUTINE_VERSION = _resolve_plugin_version()
 CLAIM_FILENAME = "chat-claim.json"
 LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
+LOG_MAX_BYTES = 150_000
 
 # v1.10.0 (F-63-01 Layer 2): SessionEnd semantics unchanged — release_claim
 # already deletes the file regardless of mode, which correctly clears both
@@ -81,6 +83,13 @@ LOG_PATH = Path.home() / ".claude" / "methodology-hook.log"
 def append_log(entry: dict[str, Any]) -> None:
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Keep the log bounded: at LOG_MAX_BYTES move it to .1 (replacing
+            # the previous one) and start fresh, so both stay under ~300 KB.
+            if LOG_PATH.stat().st_size >= LOG_MAX_BYTES:
+                os.replace(LOG_PATH, LOG_PATH.with_name(LOG_PATH.name + ".1"))
+        except OSError:
+            pass
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
