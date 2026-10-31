@@ -1,5 +1,7 @@
 # Claude instructions
 
+tier: T4
+
 @PROJECT.md
 
 At session start and before work in another repository, follow the repository

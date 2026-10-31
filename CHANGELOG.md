@@ -61,7 +61,7 @@ Patch. The native Codex probes no longer give their model full disk access. `cod
 
 ## v1.28.0
 
-Minor. The tier slice now reaches the model in full at SessionStart. Claude Code saves a hook output over about 10,000 characters to a file and shows the model a 2 KB preview, per hook (measured 2026-10-23: 9,000 and 9,900 characters arrived inline in one session, 10,100 and 12,000 were saved to file). The T2, T3 and T4 slices are 14,548, 11,452 and 16,023 bytes, so sessions at those tiers saw the start of the slice and a path. Reported by vc-roe-private as OBS-S92-01, which counted 199 saved public outputs on one node.
+Minor. The tier slice now reaches the model in full at SessionStart. Claude Code saves a hook output over about 10,000 characters to a file and shows the model a 2 KB preview, per hook (measured 2026-10-23: 9,000 and 9,900 characters arrived inline in one session, 10,100 and 12,000 were saved to file). The T2, T3 and T4 slices are 14,548, 11,452 and 16,023 bytes, so sessions at those tiers saw the start of the slice and a path. Reported by the private companion as OBS-S92-01, which counted 199 saved public outputs on one node.
 
 ### What changed
 
