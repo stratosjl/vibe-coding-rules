@@ -4,7 +4,9 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
-## Unreleased
+## v1.30.0
+
+Minor. A T4 goal may run in auto or bypass mode when every confirmation-gated command is covered by an explicit ask or deny rule.
 
 ### What changed
 
