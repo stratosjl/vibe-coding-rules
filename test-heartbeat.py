@@ -18,6 +18,8 @@ Usage:
 
 from __future__ import annotations
 
+from typing import Optional
+
 import json
 import os
 import re
@@ -802,9 +804,12 @@ def case_stop_logs_stop_hook_active_on_sentinel(tmp: Path) -> tuple[bool, str]:
                                   text="Status block.\n[heartbeat-fired:T+5m]")
 
 
-def run_ups(session_id: str, enforce: bool = False) -> str:
+def run_ups(session_id: str, enforce: bool = False,
+            transcript: Optional[Path] = None) -> str:
     """Run hooks/user-prompt-submit.py end-to-end; return its additionalContext."""
     event = {"session_id": session_id, "cwd": str(PLUGIN_ROOT), "user_prompt": "carry on"}
+    if transcript is not None:
+        event["transcript_path"] = str(transcript)
     env = os.environ.copy()
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     if enforce:
@@ -935,6 +940,45 @@ def case_ups_due_tag_names_marker(tmp: Path) -> tuple[bool, str]:
         _cleanup(sid)
 
 
+def _ups_catchup(tmp: Path, last_hb_min: int, marker_min: int) -> tuple[int, int, str]:
+    """45 min in; the previous turn's final message carries marker_min."""
+    sid = f"vc-roe-test-{uuid.uuid4().hex[:8]}"
+    try:
+        t0 = int(time.time()) - 45 * 60
+        write_anchor(sid, t0=t0, last_hb=t0 + last_hb_min * 60 if last_hb_min else 0, tier="T4")
+        tx = tmp / f"transcript-{sid}.jsonl"
+        write_transcript(tx, [
+            {"role": "user-prompt", "text": "go"},
+            {"role": "tool-result", "text": "ok"},
+            {"role": "assistant", "text": f"done\n\n[heartbeat-fired:T+{marker_min}m]"},
+        ])
+        ctx = run_ups(sid, transcript=tx)
+        return t0, int(read_anchor(sid).get("LAST_HEARTBEAT", "0")), ctx
+    finally:
+        _cleanup(sid)
+
+
+def case_ups_catches_up_missed_final_sentinel(tmp: Path) -> tuple[bool, str]:
+    """v1.30.4: a sentinel Stop missed is counted at the next prompt, at its own minute."""
+    t0, last_hb, ctx = _ups_catchup(tmp, 0, 40)
+    if last_hb != t0 + 40 * 60:
+        return False, f"FAIL: LAST_HEARTBEAT={last_hb}, expected T0+40m={t0 + 2400}"
+    if ", OK]" not in ctx:
+        return False, f"FAIL: clock should read OK 5 min after the caught heartbeat: {ctx!r}"
+    return True, "OK (T+40m caught at the next prompt, clock reads OK)"
+
+
+def case_ups_catchup_ignores_stale_and_future(tmp: Path) -> tuple[bool, str]:
+    """v1.30.4 controls: an already-counted or a future minute does not move the clock."""
+    t0, stale, _ = _ups_catchup(tmp, 30, 20)
+    if stale != t0 + 30 * 60:
+        return False, f"FAIL: stale T+20m moved LAST_HEARTBEAT off T+30m: {stale}"
+    t0, future, _ = _ups_catchup(tmp, 0, 99)
+    if future != 0:
+        return False, f"FAIL: future T+99m advanced LAST_HEARTBEAT: {future}"
+    return True, "OK (stale and future markers ignored)"
+
+
 def main() -> int:
     global ANCHOR_DIR
     cases = [
@@ -967,6 +1011,10 @@ def main() -> int:
          case_free_text_heartbeat_does_not_advance),
         ("DUE tag names the marker, OK does not (v1.30.3)",
          case_ups_due_tag_names_marker),
+        ("UPS catches a sentinel Stop missed (v1.30.4)",
+         case_ups_catches_up_missed_final_sentinel),
+        ("UPS catch-up ignores stale and future (v1.30.4 control)",
+         case_ups_catchup_ignores_stale_and_future),
         ("stop logs stop_hook_active=true (v1.26.0)",
          case_stop_logs_stop_hook_active_true),
         ("stop logs stop_hook_active=null when absent (v1.26.0)",

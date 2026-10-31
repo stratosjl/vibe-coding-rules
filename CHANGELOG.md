@@ -4,6 +4,22 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.30.4
+
+Patch. A heartbeat written in a turn's last message is no longer lost, and the test suites no longer touch live session files.
+
+### What changed
+
+- **UserPromptSubmit catches up a heartbeat Stop missed.** Stop can run before Claude Code has flushed the turn's final message to the transcript, so a sentinel there was not seen, and no later hook re-read that turn. At the next prompt the message is on disk: the hook scans the transcript tail (512 KB) for assistant sentinels and advances `LAST_HEARTBEAT` to the newest one that is newer than the ledger and not in the future, dated at the sentinel's own minute. Logged as `sentinel-catchup-advanced`.
+- **`test-exit-contract.py` runs the session-start hook on a temporary HOME**, as well as a temporary temp dir.
+- **`test-kimi-adapter.py` runs on a temporary temp dir**, as well as a temporary HOME. Its UserPromptSubmit case had overwritten a live session's current-session marker for this repository.
+
+### Evidence
+
+- 2026-10-31, ASUS: the final message carrying `[heartbeat-fired:T+54m]` was written to the transcript in the same second Stop ran; Stop logged `sentinel_found: false` and the clock stayed at T+0m. A later final-message sentinel (T+63m) was caught, so the race is intermittent. On deskmeet, two well-formed sentinels on 1.28.1 gave four Stop rows, all `sentinel_found: false` (vc-roe-private OBS-vcroe-heartbeat-ledger-lag-01).
+- 2026-10-31, deskmeet: a floor run rotated the live hook log at 08:45 under session id `vcroe-new`, a `test-exit-contract.py` fixture.
+- `test-heartbeat.py`: two new cases, 27 in all with 0 misses. Against the v1.30.3 hook the catch-up case fails; the stale-and-future control passes either way. On this session's real transcript the scan returns 63, the sentinel the hooks did count.
+
 ## v1.30.3
 
 Patch. A heartbeat marker written slightly wrong no longer leaves the clock stuck, and a due clock tag says what to write.

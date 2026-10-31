@@ -179,6 +179,50 @@ def emit(additional_context: str) -> None:
         pass
 
 
+# v1.30.3+: a heartbeat sentinel in a turn's FINAL message can be missed by
+# Stop, which may run before Claude Code has flushed that message to the
+# transcript (OBS-S60-01; measured 2026-10-31: message and Stop in the same
+# second, sentinel_found=false). No later hook re-read that turn, so the
+# heartbeat was lost. By the next prompt the message is on disk, so this hook
+# catches up by scanning the transcript tail.
+CATCHUP_SENTINEL_RE = re.compile(r"\[heartbeat-fired:T\+(\d+)m?\]")
+CATCHUP_TAIL_BYTES = 512 * 1024
+
+
+def transcript_max_sentinel(transcript_path: str) -> int:
+    """Highest T+N in assistant text blocks near the transcript's end, or -1."""
+    best = -1
+    try:
+        p = Path(transcript_path)
+        if not transcript_path or not p.is_file():
+            return -1
+        with open(p, "rb") as f:
+            size = f.seek(0, 2)
+            f.seek(max(0, size - CATCHUP_TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="replace")
+        for line in tail.splitlines():
+            if "heartbeat-fired" not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            msg = row.get("message") if isinstance(row.get("message"), dict) else row
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            for b in blocks:
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
+                    for m in CATCHUP_SENTINEL_RE.finditer(b["text"]):
+                        best = max(best, int(m.group(1)))
+    except Exception:
+        return -1
+    return best
+
+
 def main() -> int:
     started = time.time()
     try:
@@ -211,6 +255,29 @@ def main() -> int:
         return 0
 
     now = int(started)
+
+    # Catch-up: advance to a sentinel Stop missed. Fresh only (newer than the
+    # ledger, not in the future), and dated at its own minute, not at now.
+    last_hb_min = (last_hb - t0) // 60 if last_hb > 0 else 0
+    caught = transcript_max_sentinel(event.get("transcript_path") or "")
+    if last_hb_min < caught <= (now - t0) // 60:
+        last_hb = t0 + caught * 60
+        write_anchor(session_id, {
+            "T0": str(t0),
+            "LAST_HEARTBEAT": str(last_hb),
+            "TIER": tier,
+            "LAST_PTU_TAG_SEC": anchor.get("LAST_PTU_TAG_SEC", "0"),
+        })
+        append_log({
+            "ts": time.time(),
+            "hook": "user-prompt-submit",
+            "session_id": session_id,
+            "diagnostic": "sentinel-catchup-advanced",
+            "from_min": last_hb_min,
+            "advanced_to_min": caught,
+            "routine_version": ROUTINE_VERSION,
+        })
+
     elapsed_t0 = now - t0
     last_hb_effective = last_hb if last_hb > 0 else t0
     elapsed_since_hb = now - last_hb_effective

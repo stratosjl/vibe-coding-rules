@@ -187,6 +187,12 @@ def arm_sync_aliases() -> None:
 def _run_hook(tmp: Path, session_id: str, plugin_root, cwd) -> tuple[str, Path]:
     env = dict(os.environ)
     env.update({"TMPDIR": str(tmp), "TEMP": str(tmp), "TMP": str(tmp)})
+    # A throwaway HOME too: the hook writes the methodology log and claims
+    # under ~/.claude, and against the real home a floor run rotated a live
+    # node's log (deskmeet, 2026-10-31, session id "vcroe-new").
+    home = tmp / "home"
+    home.mkdir(exist_ok=True)
+    env.update({"HOME": str(home), "USERPROFILE": str(home)})
     if plugin_root is None:
         env.pop("CLAUDE_PLUGIN_ROOT", None)
     else:

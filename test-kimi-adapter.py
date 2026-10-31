@@ -443,11 +443,19 @@ def main() -> int:
     # written under ~/.claude; against the real home they leave folders behind
     # in ~/.claude/projects and fail outright where that path is read-only.
     with tempfile.TemporaryDirectory(prefix="vc-roe-kimi-home-") as home:
-        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP")}
         os.environ["HOME"] = os.environ["USERPROFILE"] = home
+        # Anchors and session markers live in the temp dir, keyed by cwd: the
+        # UPS case once overwrote a live session's marker for this repo.
+        tmpdir = os.path.join(home, "tmp")
+        os.makedirs(tmpdir)
+        for k in ("TMPDIR", "TEMP", "TMP"):
+            os.environ[k] = tmpdir
+        saved_tempdir, tempfile.tempdir = tempfile.tempdir, tmpdir
         try:
             return _run(only)
         finally:
+            tempfile.tempdir = saved_tempdir
             for k, v in saved.items():
                 if v is None:
                     os.environ.pop(k, None)
