@@ -416,6 +416,9 @@ OUTSIDE = re.compile(
 EXEMPT = "vc-roe:runtime-state"
 
 
+UNPARSEABLE: list[str] = []
+
+
 def _executable_code_lines(rel: str, text: str):
     """Yield (lineno, line) for lines that are CODE, not prose.
 
@@ -445,7 +448,11 @@ def _executable_code_lines(rel: str, text: str):
                         for ln in range(body[0].lineno, (body[0].end_lineno or body[0].lineno) + 1):
                             docstring_spans.add(ln)
         except Exception:
-            return  # unparseable: report nothing rather than a wrong number
+            # Unparseable: record it, and scan every non-comment line rather
+            # than none. Reporting nothing made a file the check could not
+            # examine read as clean.
+            UNPARSEABLE.append(rel)
+            docstring_spans = set()
         for i, line in enumerate(text.splitlines(), 1):
             if i in docstring_spans:
                 continue
@@ -484,8 +491,22 @@ def arm_hygiene() -> None:
     # And a negative control: the exemption marker must actually suppress.
     check("exemption marker suppresses a real hit (negative control)",
           EXEMPT in "x = '/home/op/y'  # " + EXEMPT)  # vc-roe:runtime-state: planted control fixture
+    # A .py that does not parse used to yield NO lines, so it read as clean:
+    # a file the check could not examine was shown as a pass. Planted control:
+    # an unparseable file carrying an out-of-repo path must still be scanned
+    # and must be recorded as unparseable.
+    planted = "def broken(:\n    p = '/home/op/y'\n"  # vc-roe:runtime-state: planted control fixture
+    before = len(UNPARSEABLE)
+    got = [ln for _, ln in _executable_code_lines("planted_unparseable.py", planted)
+           if OUTSIDE.search(ln)]
+    check("an unparseable .py is still scanned, not read as clean (control)", bool(got))
+    check("an unparseable .py is recorded as unparseable (control)",
+          UNPARSEABLE[before:] == ["planted_unparseable.py"])
+    del UNPARSEABLE[before:]
     check("no executable file hard-codes an out-of-repo absolute path",
           not hits, f"{len(hits)} hit(s): " + ", ".join(hits[:6]))
+    check("every tracked .py file parses (an unparseable one cannot be fully checked)",
+          not UNPARSEABLE, ", ".join(UNPARSEABLE[:6]))
     print(f"       denominator: {scanned} .py/.sh of {len(tracked)} tracked "
           f"({skipped} skipped as non-executable or unreadable); docstrings and "
           f"comment lines excluded")
