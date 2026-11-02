@@ -53,6 +53,7 @@ from typing import Any
 SELF = Path(__file__).resolve()
 PLUGIN_ROOT = SELF.parent
 SESSION_START = PLUGIN_ROOT / "hooks" / "session-start.py"
+CANONICAL_URL = "https://github.com/stratosjl/vibe-coding-rules.git"
 
 EXIT_OK = 0
 EXIT_DEFECT = 1
@@ -174,9 +175,11 @@ def main() -> int:
     try:
         home = make_home(tmp, "home")
 
-        # Case A: marker files present, hooksPath unset -> re-armed + side effect.
-        print("Case A: vc-roe-like repo, core.hooksPath unset")
+        # Case A: marker files present, a remote naming the canonical repo,
+        # hooksPath unset -> re-armed + side effect.
+        print("Case A: vc-roe clone (canonical remote), core.hooksPath unset")
         repo = make_repo(tmp, "repoA", with_markers=True)
+        git(repo, "remote", "add", "github", CANONICAL_URL)
         check(hooks_path(repo) == "", "A precondition: core.hooksPath unset")
         rc, ctx = run_session_start(home, repo)
         check(rc == 0, "A hook exits 0")
@@ -201,6 +204,21 @@ def main() -> int:
         check(rc == 0, "C hook exits 0")
         check("- pre_push_gate: n/a" in ctx, "C trace token n/a")
         check(hooks_path(repo) == "", "C core.hooksPath untouched (still unset)")
+
+        # Case F: the two marker files but NO remote naming the canonical repo
+        # (a lookalike, e.g. a hostile clone) -> config is NOT written, a
+        # warning says so. Until v1.31.0 this case wrote core.hooksPath, so
+        # opening such a clone armed whatever hook it shipped.
+        for name, url in (("repoF", None), ("repoG", "https://example.invalid/someone/lookalike.git")):
+            print(f"Case {name[-1]}: lookalike repo, remote={url}")
+            repo = make_repo(tmp, name, with_markers=True)
+            if url:
+                git(repo, "remote", "add", "origin", url)
+            rc, ctx = run_session_start(home, repo)
+            check(rc == 0, f"{name[-1]} hook exits 0")
+            check("- pre_push_gate: unverified-repo" in ctx, f"{name[-1]} trace token unverified-repo")
+            check(hooks_path(repo) == "", f"{name[-1]} core.hooksPath NOT written")
+            check("did not write core.hooksPath" in ctx, f"{name[-1]} banner says nothing was written")
 
         # Case D: cwd not a git repo at all -> n/a, fail-soft.
         print("Case D: non-git cwd")

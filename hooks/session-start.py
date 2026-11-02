@@ -1066,6 +1066,31 @@ def _hookspath_token(value: str) -> str:
     return first or "(empty)"
 
 
+_CANONICAL_REMOTE_RE = re.compile(
+    r"github\.com[:/]+stratosjl/vibe-coding-rules(?:\.git)?/?$", re.IGNORECASE)
+
+
+def _has_canonical_remote(git_root: Path) -> bool:
+    """True when any remote URL of the repo points at the canonical public
+    repository. Any error answers False, so the caller falls back to the
+    warning rather than writing config."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(git_root), "config", "--local", "--get-regexp",
+             r"^remote\..*\.url$"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+        )
+    except Exception:
+        return False
+    if r.returncode != 0:
+        return False
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and _CANONICAL_REMOTE_RE.search(parts[1].strip()):
+            return True
+    return False
+
+
 def ensure_pre_push_gate_armed(cwd: Path) -> str:
     """Self-heal the pre-push publish-audit gate when the session runs inside
     the vibe-coding-rules working tree itself.
@@ -1084,8 +1109,11 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
     check; a repo of anyone's that happens to carry both matches it. Measured
     2026-09-04: a throwaway repo with no git remote and no `.claude-plugin/`
     matched. The consequence is bounded by the foreign-hookspath arm below,
-    which refuses to overwrite a value someone else set; what remains is that
-    an UNSET core.hooksPath in such a repo is still written. For any project
+    which refuses to overwrite a value someone else set, and since v1.31.0 by
+    the identity check: an UNSET core.hooksPath is written only when a remote
+    URL names github.com/stratosjl/vibe-coding-rules. A lookalike gets a
+    warning and no write. Residual: a repo copied with its `.git/config`
+    (an archive, not a clone) can carry a forged remote URL. For any project
     that merely installs the plugin this is a silent no-op returning "n/a".
 
     The executable bit on `.githooks/pre-push` is tracked in-repo (mode
@@ -1096,7 +1124,8 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
     session start. Returns one of: "n/a" (not this repo / undetectable),
     "armed" (already correct), "re-armed" (was genuinely UNSET, now set),
     "foreign-hookspath:<observed>" (was set to something else, left untouched),
-    "rearm-failed" (gap detected but could not set it).
+    "rearm-failed" (gap detected but could not set it), "unverified-repo"
+    (unset, but no remote names the canonical repo, so nothing was written).
     """
     try:
         git_root = find_git_root(cwd, max_levels=6)
@@ -1132,7 +1161,14 @@ def ensure_pre_push_gate_armed(cwd: Path) -> str:
             # the key is unset. The branch below MUTATES repository config, so
             # an unanswered probe must not reach it.
             return "n/a"
-        # Genuinely unset: the publish-audit gate is inert. Re-arm it.
+        # Genuinely unset. v1.31.0: write config only when a remote names the
+        # canonical repository. The two marker files are ordinary names, so
+        # without this a lookalike clone (a hostile one included) had its own
+        # .githooks armed just by opening a session in it. Remote URLs are set
+        # by whoever cloned and do not travel with a clone, so they are a
+        # better identity signal than any file the repo itself ships.
+        if not _has_canonical_remote(git_root):
+            return "unverified-repo"
         try:
             subprocess.run(
                 ["git", "-C", str(git_root), "config", "--local",
@@ -1759,6 +1795,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             "> WARNING: the vc-roe pre-push publish-audit gate is INERT "
             "(core.hooksPath unset) and automatic re-arm FAILED. Run "
             "`bash bin/install-hooks.sh` before your next push (OBS-AUD-2).\n\n"
+        )
+    elif gate_state == "unverified-repo":
+        gate_banner_text = (
+            "> WARNING: this repo carries the vc-roe publish-audit hook files "
+            "but none of its remotes names github.com/stratosjl/vibe-coding-rules, "
+            "so vc-roe did not write core.hooksPath and pushes from here are NOT "
+            "gated. If this is a clone you trust, run `bash bin/install-hooks.sh`.\n\n"
         )
     elif gate_state.startswith("foreign-hookspath:"):
         # F031: the old code reached this state, called it "re-armed", and
