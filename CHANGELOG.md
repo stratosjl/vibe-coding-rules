@@ -4,6 +4,31 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.31.0
+
+Minor. The publish gate reads the operator overlay from outside the public tree and fails closed on an operator node that has none. Two checks no longer pass over things they could not examine.
+
+### What changed
+
+- **The gate finds the operator overlay through the addons link.** `bin/audit-patterns.sh` looks for `audit-patterns.local.sh` in `~/.claude/vc-roe-addons/audit-overlay/` first, then in `bin/`. The private companion keeps the canonical copy there, so one commit reaches every node on its next pull instead of waiting for a hand copy into each clone. The local history baseline is read from the same directory as the overlay. `publish-audit.sh` prints the path it read.
+- **An operator node without an overlay cannot pass.** When `~/.claude/vc-roe-addons` exists, or is a link whose target is gone, and no overlay is found in either place, `publish-audit.sh` and `publish-audit-state.sh` exit 3 (NOT-RUNNABLE), which blocks a push. A clone without the link runs the public patterns only, as before.
+- **SessionStart arms the pre-push gate only in the real clone.** An unset `core.hooksPath` is written only when the remote the current branch tracks has a URL that is exactly `github.com/stratosjl/vibe-coding-rules` in one of git's three GitHub forms. A repo that merely carries `.githooks/pre-push` and `bin/install-hooks.sh` now gets `pre_push_gate: unverified-repo` and a warning, and nothing is written. Before, opening a lookalike clone armed whatever hooks it shipped.
+- **The exit-contract hygiene check reports an unparseable `.py`.** It used to yield no lines for such a file, so the file read as clean. It now scans every non-comment line and fails while any tracked `.py` does not parse.
+- The v1.30.3 and v1.30.4 entries no longer name the private companion (`8e7574c`).
+
+### Evidence
+
+- 2026-11-02, Dell: the combined audit passed (7 PASS) with the private companion's name in `CHANGELOG.md`; the overlay copy on the node had no pattern for it. After the companion added one, a line planted in `CHANGELOG.md` failed `publish-audit.sh` (1 deny hit, 42 patterns, read through the addons link) and the restored file passed.
+- `test-audit-overlay-lookup.py` (new): 6 cases in a throwaway HOME. Against v1.30.4, 3 fail; the dangling-link case also fails with the `-L` test removed.
+- `test-pre-push-gate-guard.py`: Cases F to I (no remote, another URL, the canonical path inside another host's URL, the canonical URL on an untracked remote) failed 12 checks before their fixes; 32 pass now. An automated security review found the last two.
+- `test-exit-contract.py`: two planted controls failed against v1.30.4; 49 pass now.
+
+### Not done
+
+- The deny-pattern history walk is still not part of the push gate: only a hand run of `publish-audit-state.sh --history` walks history, and it reports the October commits that carried the name until the public `baseline-sha` moves past them.
+- Each node's old `bin/` overlay copy can go once the gate is seen reading the addons path there.
+- Not covered by the identity check: a user who points a hostile clone's branch at the canonical remote by hand, and a repo copied together with its `.git/config`.
+
 ## v1.30.4
 
 Patch. A heartbeat written in a turn's last message is no longer lost, and the test suites no longer touch live session files.
