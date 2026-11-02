@@ -1066,29 +1066,39 @@ def _hookspath_token(value: str) -> str:
     return first or "(empty)"
 
 
+# The whole URL must be one of the three forms git uses for GitHub; fullmatch,
+# so the canonical path embedded in another host's URL does not pass.
 _CANONICAL_REMOTE_RE = re.compile(
-    r"github\.com[:/]+stratosjl/vibe-coding-rules(?:\.git)?/?$", re.IGNORECASE)
+    r"(?:https://github\.com/|ssh://git@github\.com/|git@github\.com:)"
+    r"stratosjl/vibe-coding-rules(?:\.git)?/?", re.IGNORECASE)
 
 
 def _has_canonical_remote(git_root: Path) -> bool:
-    """True when any remote URL of the repo points at the canonical public
-    repository. Any error answers False, so the caller falls back to the
-    warning rather than writing config."""
+    """True when the remote the current branch tracks points at the canonical
+    public repository. Only the tracked remote counts: a canonical URL added
+    as a second remote of someone else's clone does not make it ours. Any
+    error, a detached HEAD or an untracked branch answers False, so the caller
+    falls back to the warning rather than writing config.
+
+    Threat model: a clone the user did not mean to trust arming its own
+    hooks. Remote config is written by whoever cloned and does not travel
+    with a clone. A user who points a hostile clone's branch at the canonical
+    remote by hand is outside it; so is a repo copied with its `.git/config`.
+    Comparing the hook files with a canonical ref was considered and not
+    taken: `core.hooksPath` arms every file in `.githooks`, and a developer
+    editing the gate would lose the arming."""
+    def cfg(*args: str) -> str:
+        r = subprocess.run(["git", "-C", str(git_root), *args],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
     try:
-        r = subprocess.run(
-            ["git", "-C", str(git_root), "config", "--local", "--get-regexp",
-             r"^remote\..*\.url$"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-        )
+        branch = cfg("symbolic-ref", "--short", "-q", "HEAD")
+        remote = cfg("config", "--local", "--get", f"branch.{branch}.remote") if branch else ""
+        url = cfg("config", "--local", "--get", f"remote.{remote}.url") if remote else ""
     except Exception:
         return False
-    if r.returncode != 0:
-        return False
-    for line in r.stdout.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2 and _CANONICAL_REMOTE_RE.search(parts[1].strip()):
-            return True
-    return False
+    return bool(url) and _CANONICAL_REMOTE_RE.fullmatch(url) is not None
 
 
 def ensure_pre_push_gate_armed(cwd: Path) -> str:

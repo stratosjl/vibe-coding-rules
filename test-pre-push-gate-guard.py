@@ -131,6 +131,12 @@ def make_repo(tmp: Path, name: str, with_markers: bool, is_git: bool = True) -> 
     return repo
 
 
+def track(repo: Path, remote: str) -> None:
+    """Make the current (possibly unborn) branch track `remote`."""
+    branch = git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    git(repo, "config", "--local", f"branch.{branch}.remote", remote)
+
+
 def hooks_path(repo: Path) -> str:
     res = git(repo, "config", "--local", "--get", "core.hooksPath")
     return res.stdout.strip() if res.returncode == 0 else ""
@@ -180,6 +186,7 @@ def main() -> int:
         print("Case A: vc-roe clone (canonical remote), core.hooksPath unset")
         repo = make_repo(tmp, "repoA", with_markers=True)
         git(repo, "remote", "add", "github", CANONICAL_URL)
+        track(repo, "github")
         check(hooks_path(repo) == "", "A precondition: core.hooksPath unset")
         rc, ctx = run_session_start(home, repo)
         check(rc == 0, "A hook exits 0")
@@ -209,11 +216,20 @@ def main() -> int:
         # (a lookalike, e.g. a hostile clone) -> config is NOT written, a
         # warning says so. Until v1.31.0 this case wrote core.hooksPath, so
         # opening such a clone armed whatever hook it shipped.
-        for name, url in (("repoF", None), ("repoG", "https://example.invalid/someone/lookalike.git")):
-            print(f"Case {name[-1]}: lookalike repo, remote={url}")
+        # H: the canonical path embedded in another host's URL (an unanchored
+        # match accepted it). I: the canonical URL on a remote the branch does
+        # not track, while the tracked remote is someone else's.
+        for name, url in (("repoF", None),
+                          ("repoG", "https://example.invalid/someone/lookalike.git"),
+                          ("repoH", "https://example.invalid/x/github.com/stratosjl/vibe-coding-rules.git"),
+                          ("repoI", "https://example.invalid/someone/lookalike.git")):
+            print(f"Case {name[-1]}: lookalike repo, tracked remote={url}")
             repo = make_repo(tmp, name, with_markers=True)
             if url:
                 git(repo, "remote", "add", "origin", url)
+                track(repo, "origin")
+            if name == "repoI":
+                git(repo, "remote", "add", "github", CANONICAL_URL)
             rc, ctx = run_session_start(home, repo)
             check(rc == 0, f"{name[-1]} hook exits 0")
             check("- pre_push_gate: unverified-repo" in ctx, f"{name[-1]} trace token unverified-repo")
