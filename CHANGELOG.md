@@ -16,7 +16,7 @@ Patch. A heartbeat written in a turn's last message is no longer lost, and the t
 
 ### Evidence
 
-- 2026-10-31, ASUS: the final message carrying `[heartbeat-fired:T+54m]` was written to the transcript in the same second Stop ran; Stop logged `sentinel_found: false` and the clock stayed at T+0m. A later final-message sentinel (T+63m) was caught, so the race is intermittent. On deskmeet, two well-formed sentinels on 1.28.1 gave four Stop rows, all `sentinel_found: false` (vc-roe-private OBS-vcroe-heartbeat-ledger-lag-01).
+- 2026-10-31, ASUS: the final message carrying `[heartbeat-fired:T+54m]` was written to the transcript in the same second Stop ran; Stop logged `sentinel_found: false` and the clock stayed at T+0m. A later final-message sentinel (T+63m) was caught, so the race is intermittent. On deskmeet, two well-formed sentinels on 1.28.1 gave four Stop rows, all `sentinel_found: false` (the private companion's OBS-vcroe-heartbeat-ledger-lag-01).
 - 2026-10-31, deskmeet: a floor run rotated the live hook log at 08:45 under session id `vcroe-new`, a `test-exit-contract.py` fixture.
 - `test-heartbeat.py`: two new cases, 27 in all with 0 misses. Against the v1.30.3 hook the catch-up case fails; the stale-and-future control passes either way. On this session's real transcript the scan returns 63, the sentinel the hooks did count.
 
@@ -31,7 +31,7 @@ Patch. A heartbeat marker written slightly wrong no longer leaves the clock stuc
 
 ### Evidence
 
-- vc-roe-private OBS-vcroe-heartbeat-ledger-lag-01 (2026-06-07) recorded a heartbeat that never advanced the clock, quoting the marker as `[heartbeat-fired:T+103]`, without `m`. Its two candidate fixes (PostToolUse transcript grep, rate limit) had shipped on 2026-05-09 in v1.1.1 and v1.1.2, so the format is the remaining explanation. Not proven: that transcript was not re-read.
+- The private companion's OBS-vcroe-heartbeat-ledger-lag-01 (2026-06-07) recorded a heartbeat that never advanced the clock, quoting the marker as `[heartbeat-fired:T+103]`, without `m`. Its two candidate fixes (PostToolUse transcript grep, rate limit) had shipped on 2026-05-09 in v1.1.1 and v1.1.2, so the format is the remaining explanation. Not proven: that transcript was not re-read.
 - 2026-10-31, ASUS: a session wrote "Heartbeat (T+32m)" and "(T+39m)" in prose; `last-heartbeat` stayed at T+0m.
 - `test-heartbeat.py`: three new cases, 25 in all with 0 misses. Against the v1.30.2 hooks two of them fail; the third is a control that passes either way.
 
