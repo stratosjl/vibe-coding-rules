@@ -71,12 +71,17 @@ fi
 # carry an older audit-patterns.sh that knows only bin/, so the resolved files
 # are copied into the clone below rather than left for it to find.
 _resolved=$( . "$PATTERNS_FILE" >/dev/null 2>&1
-             printf '%s\n%s\n%s\n' "${AUDIT_OVERLAY_STATE:-absent}" \
+             printf '%s\n%s\n%s\n' "${AUDIT_OVERLAY_STATE:-}" \
                "${AUDIT_OVERLAY_FILE:-}" "${AUDIT_BASELINE_LOCAL_FILE:-}" )
 OVERLAY_STATE=$(printf '%s\n' "$_resolved" | sed -n 1p)
 LOCAL_OVERLAY=$(printf '%s\n' "$_resolved" | sed -n 2p)
 RESOLVED_BASELINE_LOCAL=$(printf '%s\n' "$_resolved" | sed -n 3p)
 unset _resolved
+if [ -z "$OVERLAY_STATE" ]; then
+  # An empty state means the source failed before it was set; that is not
+  # evidence the node has no overlay, so it must not become a public-only run.
+  notrunnable "could not resolve the operator overlay state from $PATTERNS_FILE"
+fi
 if [ "$OVERLAY_STATE" = "missing" ]; then
   notrunnable "this node has ~/.claude/vc-roe-addons but no operator overlay at $LOCAL_OVERLAY or bin/audit-patterns.local.sh; the scan cannot run fully armed"
 fi
