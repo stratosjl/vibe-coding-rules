@@ -106,8 +106,23 @@ SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-
 # Consumer contract, valid after the source line, alongside
 # DENY_PATTERNS / WARN_PATTERNS / PUBLIC_AUTHOR_EMAIL / SCAN_EXCLUDE:
 #   AUDIT_OVERLAY_FILE     resolved overlay path, set whether or not it exists
-#   AUDIT_OVERLAY_STATE    present | absent | unreadable
+#   AUDIT_OVERLAY_STATE    present | absent | unreadable | missing
 #   AUDIT_OVERLAY_PRESENT  1 when the overlay was sourced, else 0
+#   AUDIT_OPERATOR_NODE    1 when ~/.claude/vc-roe-addons exists, else 0
+#   AUDIT_BASELINE_LOCAL_FILE  the operator-local history baseline, in the
+#                          same directory as the overlay (the two are a pair)
+#
+# Where the overlay is looked for (v1.31.0), first match wins:
+#   1. ~/.claude/vc-roe-addons/audit-overlay/audit-patterns.local.sh, the
+#      private companion's canonical copy, reached through the addons link
+#      every operator node already has. One commit there reaches every node
+#      on its next pull.
+#   2. bin/audit-patterns.local.sh in this clone, the older hand-made copy.
+# `missing` means the node has the addons link (an operator node) but no
+# overlay in either place. It is NOT the benign `absent` of a third-party
+# clone: the scan cannot run fully armed, and consumers treat it as
+# NOT-RUNNABLE. Measured 2026-11-02: an overlay without the pattern for a
+# private name let the combined audit pass with that name in CHANGELOG.md.
 #   AUDIT_DENY_SCAFFOLD    DENY entries this public scaffold defines
 #   AUDIT_DENY_OVERLAY     DENY entries the overlay appended, 0 when absent
 #   AUDIT_WARN_SCAFFOLD    WARN entries this public scaffold defines
@@ -130,7 +145,24 @@ SCAN_EXCLUDE='(__pycache__|(^|/)\.git/|LICENSE-CODE|LICENSE-CONTENT|bin/publish-
 # never the only thing standing between an unloadable overlay and a
 # green scan.
 _AUDIT_PATTERNS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUDIT_OVERLAY_FILE="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
+_AUDIT_ADDONS_LINK="${HOME:-/nonexistent}/.claude/vc-roe-addons"
+_AUDIT_ADDONS_OVERLAY="$_AUDIT_ADDONS_LINK/audit-overlay/audit-patterns.local.sh"
+AUDIT_OPERATOR_NODE=0
+# -L as well as -e: a link whose target is gone (the private clone deleted or
+# moved) still marks an operator node, and must not turn into a public-only pass.
+if [ -n "${HOME:-}" ] && { [ -e "$_AUDIT_ADDONS_LINK" ] || [ -L "$_AUDIT_ADDONS_LINK" ]; }; then
+  AUDIT_OPERATOR_NODE=1
+fi
+if [ -e "$_AUDIT_ADDONS_OVERLAY" ]; then
+  AUDIT_OVERLAY_FILE="$_AUDIT_ADDONS_OVERLAY"
+elif [ -e "$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh" ]; then
+  AUDIT_OVERLAY_FILE="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
+elif [ "$AUDIT_OPERATOR_NODE" = 1 ]; then
+  AUDIT_OVERLAY_FILE="$_AUDIT_ADDONS_OVERLAY"
+else
+  AUDIT_OVERLAY_FILE="$_AUDIT_PATTERNS_DIR/audit-patterns.local.sh"
+fi
+AUDIT_BASELINE_LOCAL_FILE="$(dirname "$AUDIT_OVERLAY_FILE")/audit-history-baseline.local.txt"
 AUDIT_DENY_SCAFFOLD=${#DENY_PATTERNS[@]}
 AUDIT_WARN_SCAFFOLD=${#WARN_PATTERNS[@]}
 if [ -r "$AUDIT_OVERLAY_FILE" ]; then
@@ -141,6 +173,9 @@ if [ -r "$AUDIT_OVERLAY_FILE" ]; then
 elif [ -e "$AUDIT_OVERLAY_FILE" ]; then
   AUDIT_OVERLAY_STATE='unreadable'
   AUDIT_OVERLAY_PRESENT=0
+elif [ "$AUDIT_OPERATOR_NODE" = 1 ]; then
+  AUDIT_OVERLAY_STATE='missing'
+  AUDIT_OVERLAY_PRESENT=0
 else
   AUDIT_OVERLAY_STATE='absent'
   AUDIT_OVERLAY_PRESENT=0
@@ -150,4 +185,4 @@ fi
 # the no-overlay case this block exists to report.
 AUDIT_DENY_OVERLAY=$(( ${#DENY_PATTERNS[@]} - AUDIT_DENY_SCAFFOLD ))
 AUDIT_WARN_OVERLAY=$(( ${#WARN_PATTERNS[@]} - AUDIT_WARN_SCAFFOLD ))
-unset _AUDIT_PATTERNS_DIR
+unset _AUDIT_PATTERNS_DIR _AUDIT_ADDONS_LINK _AUDIT_ADDONS_OVERLAY

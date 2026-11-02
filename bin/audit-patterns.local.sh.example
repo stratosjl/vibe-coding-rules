@@ -10,6 +10,14 @@
 #   3. DO NOT COMMIT the copy. The path bin/audit-patterns.local.sh
 #      is gitignored via the *.local.* rule in .gitignore.
 #
+# Since v1.31.0 the gate looks first in
+# ~/.claude/vc-roe-addons/audit-overlay/audit-patterns.local.sh, then in
+# bin/. Keeping the overlay in a private repository reached through that
+# link means one commit there reaches every machine. A machine that has
+# ~/.claude/vc-roe-addons but no overlay in either place makes the gate
+# exit 3 (NOT-RUNNABLE), which blocks a push. Put
+# audit-history-baseline.local.txt in the same directory as the overlay.
+#
 # The overlay APPENDS to the DENY_PATTERNS array defined in
 # bin/audit-patterns.sh. The public scaffold's generic patterns
 # (.internal, .lan) remain active alongside the operator-specific ones.

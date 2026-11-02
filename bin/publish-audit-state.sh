@@ -65,6 +65,22 @@ if [ ! -r "$PUBLISH_AUDIT" ]; then
   notrunnable "cannot find $PUBLISH_AUDIT; nothing was audited"
 fi
 
+# v1.31.0: resolve the operator overlay and its baseline the way
+# bin/audit-patterns.sh does (the addons link first, then bin/), by sourcing it
+# in a subshell so its arrays do not leak into this script. The cloned HEAD may
+# carry an older audit-patterns.sh that knows only bin/, so the resolved files
+# are copied into the clone below rather than left for it to find.
+_resolved=$( . "$PATTERNS_FILE" >/dev/null 2>&1
+             printf '%s\n%s\n%s\n' "${AUDIT_OVERLAY_STATE:-absent}" \
+               "${AUDIT_OVERLAY_FILE:-}" "${AUDIT_BASELINE_LOCAL_FILE:-}" )
+OVERLAY_STATE=$(printf '%s\n' "$_resolved" | sed -n 1p)
+LOCAL_OVERLAY=$(printf '%s\n' "$_resolved" | sed -n 2p)
+RESOLVED_BASELINE_LOCAL=$(printf '%s\n' "$_resolved" | sed -n 3p)
+unset _resolved
+if [ "$OVERLAY_STATE" = "missing" ]; then
+  notrunnable "this node has ~/.claude/vc-roe-addons but no operator overlay at $LOCAL_OVERLAY or bin/audit-patterns.local.sh; the scan cannot run fully armed"
+fi
+
 # Resolve the published remote URL by NAME. This repository is published on
 # GitHub and its remote is named `github`, so that is tried first. `origin`,
 # git's default name, is a fallback for clones that were never renamed. A
@@ -191,10 +207,9 @@ PUBLIC_HEAD_SHA=$(printf '%s' "$PUBLIC_HEAD_SHA" | tr -d '\n')
 # needs. When run from a fresh public clone with no local overlay, this
 # is a no-op and the inner audit applies only the public scaffold's
 # generic patterns (introduced at v1.6.0 with the W2 split).
-LOCAL_OVERLAY="$REPO_ROOT/bin/audit-patterns.local.sh"
-if [ -r "$LOCAL_OVERLAY" ]; then
+if [ "$OVERLAY_STATE" = "present" ] && [ -r "$LOCAL_OVERLAY" ]; then
   cp -f "$LOCAL_OVERLAY" "$TMPDIR/repo/bin/audit-patterns.local.sh"
-  hdr "operator-local overlay copied into temp clone (full DENY coverage active)"
+  hdr "operator-local overlay copied into temp clone from $LOCAL_OVERLAY (full DENY coverage active)"
 else
   hdr "no operator-local overlay present; running with public scaffold patterns only"
 fi
@@ -285,7 +300,11 @@ if [ "$WALK_HISTORY" -eq 1 ]; then
   # deny that produces no parseable pair (the HEAD-author-email check, say)
   # fails the commit. Fail-closed in every direction.
   BASELINE_PUBLIC="$REPO_ROOT/bin/audit-history-baseline.txt"
-  BASELINE_LOCAL="$REPO_ROOT/bin/audit-history-baseline.local.txt"
+  # v1.31.0: the local baseline sits beside the overlay that was resolved.
+  BASELINE_LOCAL="${RESOLVED_BASELINE_LOCAL:-$REPO_ROOT/bin/audit-history-baseline.local.txt}"
+  if [ "$OVERLAY_STATE" = "present" ] && [ ! -r "$BASELINE_LOCAL" ]; then
+    hdr "WARNING: overlay read from $LOCAL_OVERLAY but no $BASELINE_LOCAL beside it; the pair is split (OBS-S69-02)"
+  fi
   BASELINE_MERGED="$TMPDIR/history-baseline.tsv"
   BASELINE_SHA=""
   : > "$BASELINE_MERGED"

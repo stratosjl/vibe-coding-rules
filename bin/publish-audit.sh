@@ -91,12 +91,19 @@ fi
 # bin/publish-audit-state.sh:129-133 so the two consumers agree.
 # Absence is NOT an error: it is normal for a fresh public clone and for
 # unprivileged CI, which is why this reports rather than exits.
-OVERLAY_FILE="${PATTERNS_FILE%.sh}.local.sh"
-if [ -r "$OVERLAY_FILE" ]; then
-  overlay_state='operator-local overlay present, full DENY coverage active'
-else
-  overlay_state='no operator-local overlay present, public scaffold patterns only'
-fi
+#
+# v1.31.0: the path is the one bin/audit-patterns.sh resolved (the addons
+# link first, then bin/), and an operator node with no overlay in either
+# place is NOT-RUNNABLE rather than a public-only pass. Exit 3 blocks a push.
+OVERLAY_FILE="$AUDIT_OVERLAY_FILE"
+case "$AUDIT_OVERLAY_STATE" in
+  present)
+    overlay_state="operator-local overlay present ($OVERLAY_FILE), full DENY coverage active" ;;
+  missing)
+    notrunnable "this node has ~/.claude/vc-roe-addons but no operator overlay at $OVERLAY_FILE or bin/audit-patterns.local.sh; the scan cannot run fully armed" ;;
+  *)
+    overlay_state='no operator-local overlay present, public scaffold patterns only' ;;
+esac
 
 deny_hits=0
 warn_hits=0
