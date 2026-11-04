@@ -27,7 +27,15 @@
 #
 # Format: <path><TAB><pattern>, one accepted pair per line. '#' comments.
 #
-# baseline-sha: 55263de04dfe26656d6d27eb56305ee42ca087bc
+# baseline-sha: 8e7574ca96b86550b181edda4b2e24350ca0ecac
+#
+# v1.31.1: moved from 55263de (2026-08-09) to 8e7574c, the commit that
+# removed an operator-local identifier from CHANGELOG.md for the second time.
+# Measured before the move, 2026-11-04: the history walk reported 12 commits
+# (2026-10-23 to 2026-10-31) with 13 deny hits, every one of them that single
+# (CHANGELOG.md, pattern) pair, already listed in the local baseline; no
+# commit after 8e7574c carries it. The move forgives exactly those hits.
+# Every commit after 8e7574c is still checked in full.
 #
 # The two rows below are the changelog quoting the names of the two generic
 # patterns that ship in bin/audit-patterns.sh, in an entry describing the

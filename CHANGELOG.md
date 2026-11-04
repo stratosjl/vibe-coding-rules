@@ -4,6 +4,25 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.31.1
+
+Patch. The hand-run history walk stops reporting the October commits that carried the private companion's name.
+
+### What changed
+
+- **The public `baseline-sha` in `bin/audit-history-baseline.txt` moves from `55263de` to `8e7574c`**, the commit that removed the name from `CHANGELOG.md` the second time. Nothing else changes: the accepted pairs are the same six rows, and the push gate (`publish-audit.sh`, HEAD only) does not read this file.
+
+### Evidence
+
+- Before, 2026-11-04 on deskmeet: `publish-audit-state.sh --history` walked 103 commits and exited 1 with 12 commits reported (2026-10-23 to 2026-10-31), 13 deny hits. Per commit, the hit count equals the count of lines carrying the name in `CHANGELOG.md`, the one pair already listed in the operator-local baseline. No commit after `8e7574c` carries it.
+- After: 103 commits, none reported, exit 0; 56 commits carry only accepted findings (44 before).
+- Control, in a throwaway clone whose remote holds the commits: with the new pin, a commit with no plant passes (exit 0, 104 commits); a further commit adding the name to `CHANGELOG.md` is reported (exit 1, 1 hit).
+
+### Not done
+
+- The history walk is still not part of the push gate.
+- One pin still covers every accepted pair. Per-pair pins were considered and not taken: no other pair occurs between `55263de` and `8e7574c`.
+
 ## v1.31.0
 
 Minor. The publish gate reads the operator overlay from outside the public tree and fails closed on an operator node that has none. Two checks no longer pass over things they could not examine.
