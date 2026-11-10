@@ -4,6 +4,24 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.32.0
+
+Minor. A T4 goal may run in auto or bypass mode with no ask or deny rule when the operator has chosen that and recorded it.
+
+### What changed
+
+- **T4 "Goal runs" rule 1: a second way into auto or bypass mode, the operator's recorded choice.** Since v1.30.0 a T4 goal could run in those modes only when every confirmation-gated command matched an explicit `permissions.ask` or `deny` rule or a denying `PreToolUse` hook. An operator who keeps no ask rules then had to run goals in default mode, which prompts on every command not on the allow list, so a goal interrupted more than a session in bypass mode had done before goals existed. Rule 1 now also allows auto or bypass mode when the operator has chosen it and the choice is recorded, for one project (a decision row) or for every project (a rule in the operator's own instructions), with its residual risk stated: rule 2's stop-to-ask clause is then the only gate, and nothing outside the session stops a command it runs. The v1.30.0 path, with rules proved in a fresh headless session, is unchanged. With neither, the prohibition stands.
+- **README**, "Working with `/goal`": the same.
+
+### Evidence
+
+- Text change only; no new measurement. `test-session-start-split.py` and the floor were re-run (release evidence held with the project's records).
+
+### Not done
+
+- Still not measured: how an ask prompt behaves inside a `/goal` turn.
+- No SessionStart warning for a T4 session in bypass mode with neither ask rules nor a recorded choice.
+
 ## v1.31.1
 
 Patch. The hand-run history walk stops reporting the October commits that carried the private companion's name.
