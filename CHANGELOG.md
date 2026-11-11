@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.33.0
+
+Minor. The T4 goal's stop-to-ask clause gains a list of what it does not cover, so a session stops asking questions the record already answers.
+
+### What changed
+
+- **T4 "Goal runs" rule 2: what the clause does not cover.** An approval on record holds when only its time slipped, with the operator present and nothing it rests on changed: the session takes the earliest window the procedure allows, says which, and starts. It does not re-confirm an approval the opening prompt or the record carries. A delegated choice (engineering, tooling, ordering, timing) is made and stated, not asked; a question that would carry a "(Recommended)" option inside that remit is not asked. The clause still stops for a mismatch in a gated procedure, an action waiting on the operator's word, the categories the operator kept, and a confirmation-gated action with no approval on record.
+- The clause itself is unchanged, so `check-goal-block.py` and every existing goal block stay valid.
+
+### Evidence
+
+- Measured 2026-11-11 on a T4 project: a deploy approved the evening before missed its morning slot, and the session asked for a new time and whether the approval held; the operator chose the recommended options and asked for such questions to stop. Text change only; `test-session-start-split.py`, `test-goal-block.py` and `test-version-lockstep.py` re-run (release evidence in the commit).
+
+### Not done
+
+- No hook enforces it: whether a question was owed stays the session's judgement, read against the record.
+
 ## v1.32.0
 
 Minor. A T4 goal may run in auto or bypass mode with no ask or deny rule when the operator has chosen that and recorded it.
