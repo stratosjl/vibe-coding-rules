@@ -4,6 +4,25 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.34.0
+
+Minor. Inside a T4 goal, technical questions go to a stronger reviewer model instead of the operator, and the categories that always stop the run gain four entries.
+
+### What changed
+
+- **T4 "Goal runs" rule 2: the kept list grows.** Beside the operator's own categories, the clause always stops for a change of scope, of the UX or GUI, of what the end user can do, or of the project's specified final deliverables. It is still one list.
+- **T4 "Goal runs" rule 2: technical questions go to a stronger reviewer model.** A question is classified by what its answer changes, not by its subject: a choice with a licence, cost, data-egress, UX or deliverable effect, or with an option in the kept list, goes to the operator. Otherwise, where the harness provides a stronger reviewer model, the session puts the question to it with the evidence, states the decision and its reason in one line, and acts; without one, it decides as a delegated choice. The answer is advice, not an approval on record, and not an independent review under AC-REVIEW. The operator is contacted only when the reviewer says the answer rests on something only the operator knows, or when advice and evidence still conflict after one more consultation and the options differ in something hard to undo.
+- The verbatim stop-to-ask clause is unchanged, so `check-goal-block.py` and every existing goal block stay valid.
+
+### Evidence
+
+- Text change only; no new measurement. Asked by the operator of a T4 project on 2026-11-12. `test-session-start-split.py`, `test-goal-block.py` and `test-version-lockstep.py` re-run, then the full floor and the combined audit (release evidence held with the project's records).
+
+### Not done
+
+- No hook enforces it: whether a question belonged to the operator or the reviewer stays the session's judgement.
+- "An output that does not match a gated procedure's expected one" is unchanged; it was not widened to every unexpected result.
+
 ## v1.33.0
 
 Minor. The T4 goal's stop-to-ask clause gains a list of what it does not cover, so a session stops asking questions the record already answers.
