@@ -137,6 +137,19 @@ def main() -> int:
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR]), "deny", {"Q4"})
     expect("A6 reviewer basis, advisor only before the operator's last message",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[ADVISOR, OPERATOR, TOOL_RESULT]), "deny", {"Q4"})
+    rc, out, _ = run(q(PUSH_Q, [dict(PUSH_OPTIONS[0], label="Push and tag v1.35.0 (Recommended)"), PUSH_OPTIONS[1]]))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    results.append(("remove the label and ask again" in reason and "the recommendation is the answer" not in reason,
+                    "A3b a confirmation-gated question with (Recommended) is told to remove the label, not to decide"))
+    rc, out, _ = run(q("Which order?", [{"label": "A first (Recommended)", "description": "x"},
+                                        {"label": "B first", "description": "y"}]))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    results.append(("the recommendation is the answer" in reason, "A3c no basis plus (Recommended): the remit text"))
+    denials = [run(q(TONIGHT, TONIGHT_OPTIONS)), run(q(PUSH_Q.split("\n")[0], PUSH_OPTIONS)),
+               run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR])]
+    texts = [(o or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "") for _, o, _ in denials]
+    results.append((all("A denial is never an approval" in x for x in texts) and all(texts),
+                    "A8 every deny reason says a denial is never an approval (incl. a push question without a basis)"))
     expect("A7 a basis with too short a reason",
            run(q("Push?\nBasis: confirmation-gated - tag", PUSH_OPTIONS)), "deny", {"Q1"})
 

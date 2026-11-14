@@ -94,6 +94,7 @@ load rather than mirroring it as a literal:
 | `hooks/post-tool-use.py` → `ROUTINE_VERSION` | derived at load |
 | `hooks/stop.py` → `ROUTINE_VERSION` | derived at load |
 | `hooks/session-end.py` → `ROUTINE_VERSION` | derived at load |
+| `hooks/pre-tool-use.py` → `ROUTINE_VERSION` | derived at load (added v1.35.0) |
 | `hooks/kimi/_adapter.py` → `KIMI_ADAPTER_VERSION` | derived at load |
 | `bin/publish-audit-combined.sh` → `HARNESS_VERSION` | derived at start |
 | `kimi.plugin.json` → `version` | **hand-maintained — bump this too** |

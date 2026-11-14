@@ -4,6 +4,20 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.1
+
+Patch. The question gate's deny reason could steer a session past a confirmation gate; it no longer does.
+
+### What changed
+
+- **Every deny reason now opens with "A denial is never an approval"** and tells the session not to take a confirmation-gated action, or the action the question asked about, because of the denial. In 1.35.0 every reason ended "anything else in the delegated remit … is decided: state the decision in one line with its reason, and act", so a push-and-tag question that lacked its basis line read as an instruction to decide the push.
+- **Q2 with a valid basis** says "remove the label and ask again" instead of "the recommendation is the answer, so decide it instead of asking". The 1.35.0 text told a confirmation-gated question carrying a "(Recommended)" label, the label the dialog tool's own description invites, to decide the action itself.
+- `test-question-gate.py` gains A3b, A3c and A8 on the reason text; A3b and A8 fail on the 1.35.0 hook and pass on this one. CONTRIBUTING lists `hooks/pre-tool-use.py` among the version carriers.
+
+### Evidence
+
+- Found by the reviewer model before the first nightly install of 1.35.0, 2026-11-15, by reading fixture A3's printed reason, which the 1.35.0 test did not assert.
+
 ## v1.35.0
 
 Minor. T4 Goal runs rule 2 gains a hook: a question reaches the operator through AskUserQuestion only on a named exception.

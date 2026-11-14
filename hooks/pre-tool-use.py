@@ -171,12 +171,20 @@ def problems(tool_input: Any, transcript_path: str) -> list[str]:
         labels = [str(o.get("label", "")) for o in (q.get("options") or [])]
         m = BASIS_RE.search(text)
         cat = m.group(1).lower() if m else None
-        if not m or cat not in BASIS_CATEGORIES or len(m.group(2)) < MIN_REASON_CHARS:
+        valid = bool(m) and cat in BASIS_CATEGORIES and len(m.group(2)) >= MIN_REASON_CHARS
+        if not valid:
             out.append(f"Q1 question {n}: no valid 'Basis: <category> - <what differs between the options>' line"
                        + (f" (category '{cat}' is not on the list)" if m and cat not in BASIS_CATEGORIES else ""))
         if any(RECOMMENDED_RE.search(lbl) for lbl in labels):
-            out.append(f"Q2 question {n}: an option is marked (Recommended); inside the delegated remit "
-                       "the recommendation is the answer, so decide it instead of asking")
+            if valid:
+                # v1.35.1: a question with a valid basis stays the operator's; the label
+                # goes, the question does not (a confirmation-gated question told to
+                # "decide it" would be steered past its own gate).
+                out.append(f"Q2 question {n}: an option is marked (Recommended); this question has a valid "
+                           "basis, so it stays the operator's: remove the label and ask again")
+            else:
+                out.append(f"Q2 question {n}: an option is marked (Recommended) and the question names no "
+                           "valid basis; inside the delegated remit the recommendation is the answer")
         if labels and all(TIMING_RE.search(lbl) for lbl in labels):
             out.append(f"Q3 question {n}: the options differ only in timing ({' / '.join(labels)}); "
                        "timing is delegated, so it is never the operator's question")
@@ -191,13 +199,16 @@ def problems(tool_input: Any, transcript_path: str) -> list[str]:
 def deny_reason(found: list[str]) -> str:
     cats = ", ".join(sorted(BASIS_CATEGORIES))
     return (
-        "vc-roe T4 question gate: this question may not go to the operator as written.\n"
+        "vc-roe T4 question gate: this question may not go to the operator as written. A denial is never an "
+        "approval: do not take a confirmation-gated action, or the action this question asked about, because "
+        "of it.\n"
         + "\n".join(f"- {p}" for p in found)
         + "\nA question reaches the operator only on a named exception (T4 Goal runs rule 2). Allowed "
         f"categories: {cats}. A reviewer basis also needs an advisor call first. A technical question goes "
-        "to the advisor; anything else in the delegated remit (engineering, tooling, ordering, timing) is "
-        "decided: state the decision in one line with its reason, and act. If a real exception applies, add "
-        "'Basis: <category> - <what differs between the options>' to the question text and ask again."
+        "to the advisor. Only a choice inside the delegated remit (engineering, tooling, ordering, timing) is "
+        "decided by the session: state the decision in one line with its reason, and act. A confirmation-gated "
+        "action, or any other real exception, is asked again with 'Basis: <category> - <what differs between "
+        "the options>' in the question text."
     )
 
 
