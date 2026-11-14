@@ -4,6 +4,28 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.0
+
+Minor. T4 Goal runs rule 2 gains a hook: a question reaches the operator through AskUserQuestion only on a named exception.
+
+### What changed
+
+- **New `hooks/pre-tool-use.py`, registered for `AskUserQuestion` (the question gate).** In a session whose anchor records `TIER=T4` it denies a question that carries no `Basis: <category> - <what differs between the options>` line from rule 2's closed list (Q1), offers a "(Recommended)" option (Q2), offers only timing choices such as now, later or next session (Q3), or claims a reviewer basis with no `advisor` call in the transcript since the operator's last message (Q4). The deny reason lists the categories and says to decide, state it in one line, and act. On its own error it allows and logs `pre-tool-use-error`, so a broken gate cannot close the channel the confirmation gates use. Below T4 it does nothing.
+- **`bin/check-goal-block.py` G8.** A prompt line outside code fences that says something waits on the operator ("waits on the operator", "the operator's go", "ask the operator", "operator first") must name its basis on the same line. The category set is the hook's; a test asserts the two are equal.
+- **T4 rule 2 text:** the gate is described; a reviewer's "ask the operator" counts only with a named exception; a session's own classification written into a record is not "the record says"; prose questions stay unguarded.
+- New suite `test-question-gate.py` (19 checks); the floor is now 17 suites.
+
+### Evidence
+
+- Measured 2026-11-15 on a T4 project: a session asked the operator "start it now, or leave it for a later session?" about a release whose substance the operator had already decided. It had classified the work by subject, wrote "awaiting the operator's go" into the record, the handover and the next prompt, and a reviewer then repeated that framing as an instruction to ask. `test-question-gate.py` replays that question: untagged it is denied (Q1, Q3), tagged "scope" it is still denied (Q3), and the step-4 line it produced fails G8.
+
+### Not done
+
+- A question asked in plain prose, not through AskUserQuestion, is not seen by the gate.
+- The category is self-attested; the hook cannot tell a true basis from a mislabelled one except by the timing and "(Recommended)" arms.
+- The reviewer's answer is encrypted in the transcript, so Q4 proves a consultation happened, not what it said.
+- Kimi: no PreToolUse adapter; the gate is Claude Code only and was not measured under Kimi.
+
 ## v1.34.0
 
 Minor. Inside a T4 goal, technical questions go to a stronger reviewer model instead of the operator, and the categories that always stop the run gain four entries.

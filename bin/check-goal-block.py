@@ -21,6 +21,14 @@ Checks, each reported PASS, FAIL or SKIP:
   G7  the condition asks for evidence shown in the conversation
       ("shown in this conversation"), because the goal evaluator reads
       only the conversation and runs no command
+  G8  (added v1.35.0) every line outside code fences that says something
+      waits on the operator ("waits on the operator", "the operator's go",
+      "ask the operator", "operator first" ...) names its basis on the same
+      line: `Basis: <category>` with a category from the T4 question gate's
+      list. Measured 2026-11-15: a session wrote "awaiting the operator's
+      go" for a release whose timing the rule delegates, and the next
+      session would have read it as "the record says it waits", a genuine-
+      looking exception made by the session's own misclassification
 
 When G1 or G2 fails, the later checks have nothing to read and are
 reported SKIP rather than FAIL, so one defect yields one FAIL.
@@ -47,6 +55,22 @@ GOAL_PREFIX = "/goal "
 GATE_PHRASE = "counts as done"
 BOUND_RE = re.compile(r"\bor stop after\b", re.IGNORECASE)
 EVIDENCE_PHRASE = "shown in this conversation"
+
+# G8: the same closed list as hooks/pre-tool-use.py BASIS_CATEGORIES
+# (test-question-gate.py asserts the two sets are equal).
+BASIS_CATEGORIES = {
+    "licence", "cost", "data-egress", "ux", "deliverable",
+    "business", "compliance", "spend", "outside-wording", "signature",
+    "scope", "gui", "end-user-function", "final-deliverables",
+    "gated-output-mismatch", "record-waits-on-operator", "confirmation-gated",
+    "reviewer-only-operator-knows", "reviewer-conflict",
+}
+WAIT_RE = re.compile(
+    r"\b(wait(s|ing)? (on|for) the operator|await(s|ing)? the operator|operator'?s (go|word|call)\b|"
+    r"until the operator|operator first|ask(s|ing)? the operator)",
+    re.IGNORECASE,
+)
+LINE_BASIS_RE = re.compile(r"Basis\s*\**\s*:\s*\**\s*([A-Za-z-]+)", re.IGNORECASE)
 
 # The clause the T4 slice tells a session to paste verbatim.
 # test-goal-block.py asserts the slice carries this exact text.
@@ -114,11 +138,12 @@ def check(path: Path) -> list[tuple[str, str, str]]:
     later = ["G3", "G4", "G5", "G6", "G7"]
 
     headings, blocks = scan(lines)
+    out_g8 = check_waits(lines, blocks)
     if len(headings) != 1:
         out.append(("G1", "FAIL", f"found {len(headings)} '## Goal' headings outside code fences, need exactly 1"))
         out.append(("G2", "SKIP", "no single Goal section"))
         out.extend((c, "SKIP", "no single Goal section") for c in later)
-        return out
+        return out + [out_g8]
     out.append(("G1", "PASS", f"one '## Goal' heading at line {headings[0] + 1}"))
 
     end = section_end(lines, headings[0], blocks)
@@ -127,7 +152,7 @@ def check(path: Path) -> list[tuple[str, str, str]]:
     if len(goals) != 1:
         out.append(("G2", "FAIL", f"found {len(goals)} fenced blocks starting with '/goal ' in the Goal section, need exactly 1"))
         out.extend((c, "SKIP", "no /goal block") for c in later)
-        return out
+        return out + [out_g8]
     out.append(("G2", "PASS", f"/goal block at lines {goals[0][0] + 1}-{goals[0][1] + 1}"))
 
     condition = goals[0][2].strip()[len(GOAL_PREFIX.strip()):].strip()
@@ -147,7 +172,28 @@ def check(path: Path) -> list[tuple[str, str, str]]:
                else ("G6", "FAIL", "no bound; end the condition with 'Or stop after <N> turns.'"))
     out.append(("G7", "PASS", "asks for evidence shown in the conversation") if EVIDENCE_PHRASE in low
                else ("G7", "FAIL", f"does not say '{EVIDENCE_PHRASE}'; the evaluator reads only the conversation"))
-    return out
+    return out + [out_g8]
+
+
+def check_waits(lines: list[str], blocks: list[tuple[int, int, str]]) -> tuple[str, str, str]:
+    """G8: a line saying something waits on the operator must name its basis."""
+    inside = set()
+    for s, e, _ in blocks:
+        inside.update(range(s, e + 1))
+    bad: list[str] = []
+    n = 0
+    for i, line in enumerate(lines):
+        if i in inside or not WAIT_RE.search(line):
+            continue
+        n += 1
+        m = LINE_BASIS_RE.search(line)
+        if not m or m.group(1).lower() not in BASIS_CATEGORIES:
+            bad.append(str(i + 1))
+    if bad:
+        return ("G8", "FAIL", f"line(s) {', '.join(bad)} say something waits on the operator without "
+                "'Basis: <category>' from the question gate's list; a timing or engineering choice is "
+                "delegated and must not be recorded as waiting")
+    return ("G8", "PASS", f"{n} operator-waiting line(s), each with a basis")
 
 
 def report(path: Path) -> int:
@@ -185,6 +231,7 @@ def self_test() -> int:
         "G5": doc(goal.replace(CANONICAL_GATE_CLAUSE, "Keep going.")),
         "G6": doc(goal.replace(" Or stop after 30 turns.", "")),
         "G7": doc(goal.replace("shown in this conversation", "true")),
+        "G8": doc(goal) + "\nStep 4 waits on the operator's go.\n",
     }
     misses = 0
     with tempfile.TemporaryDirectory(prefix="check-goal-block-") as d:
