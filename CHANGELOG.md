@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.2
+
+Patch. The question gate's Q3 reason no longer tells a confirmation-gated question that it is "never the operator's question".
+
+### What changed
+
+- **Q3's reason**, given when every option is a timing choice, now says the time is the session's to choose and that the denial settles nothing about whether the action may be taken; an approval that is not on record is asked for with options that differ in the decision and carry no time words. In 1.35.1 a question with a valid `Basis: confirmation-gated` line and labels such as "Push tonight" / "Push tomorrow" or "Push now" / "Wait" was told "timing is delegated, so it is never the operator's question", told to ask again with the basis it already carried (denied again), and left with "decided by the session … act" as its only instruction.
+- **The closing sentence** of every reason adds that the delegated remit never covers a confirmation-gated action with no approval on record, and that a re-ask uses options that differ in the decision, not in time.
+- When Q3 fires is unchanged.
+- `test-question-gate.py` gains A2b (the new wording, and the old wording absent, for a confirmation-gated basis with timing-only labels) and A2c (the re-ask the reason prescribes passes the gate). A2b fails on the 1.35.1 hook.
+
+### Evidence
+
+- Found by the audit pass of 1.35.0 and 1.35.1 on 2026-11-15, by probing the hook with a valid confirmation-gated basis and timing-only labels, a case no 1.35.1 test covered.
+
 ## v1.35.1
 
 Patch. The question gate's deny reason could steer a session past a confirmation gate; it no longer does.

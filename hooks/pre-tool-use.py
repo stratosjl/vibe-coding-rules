@@ -23,7 +23,11 @@ holds for any question:
       question should not be asked;
   Q3  every option label is a timing choice (now, later, next session,
       defer...): timing is delegated, so a now-or-later question is never the
-      operator's, whatever basis it claims;
+      operator's, whatever basis it claims. Since v1.35.2 the reason says the
+      denial settles nothing about the action itself: an approval that is not
+      on record is asked for with options that differ in the decision, not in
+      time (a valid confirmation-gated basis with "Push tonight" / "Push
+      tomorrow" was otherwise told it was "never the operator's question");
   Q4  the basis is a reviewer one (REVIEWER_CATEGORIES) and the transcript
       shows no `advisor` call since the last operator message.
 
@@ -186,8 +190,13 @@ def problems(tool_input: Any, transcript_path: str) -> list[str]:
                 out.append(f"Q2 question {n}: an option is marked (Recommended) and the question names no "
                            "valid basis; inside the delegated remit the recommendation is the answer")
         if labels and all(TIMING_RE.search(lbl) for lbl in labels):
-            out.append(f"Q3 question {n}: the options differ only in timing ({' / '.join(labels)}); "
-                       "timing is delegated, so it is never the operator's question")
+            # v1.35.2: the time is the session's; the action is not. A confirmation-gated
+            # question phrased as a choice of time must not read as "decide and act".
+            out.append(f"Q3 question {n}: the options differ only in timing ({' / '.join(labels)}). The time "
+                       "is the session's to choose, and this denial settles nothing about whether the action "
+                       "may be taken: if it needs an approval that is not on record, ask for the approval with "
+                       "options that differ in the decision and carry no time words (for example 'Push and "
+                       "tag' / 'Do not push')")
         if cat in REVIEWER_CATEGORIES:
             seen = advisor_since_last_operator_message(transcript_path)
             if seen is not True:
@@ -206,9 +215,10 @@ def deny_reason(found: list[str]) -> str:
         + "\nA question reaches the operator only on a named exception (T4 Goal runs rule 2). Allowed "
         f"categories: {cats}. A reviewer basis also needs an advisor call first. A technical question goes "
         "to the advisor. Only a choice inside the delegated remit (engineering, tooling, ordering, timing) is "
-        "decided by the session: state the decision in one line with its reason, and act. A confirmation-gated "
-        "action, or any other real exception, is asked again with 'Basis: <category> - <what differs between "
-        "the options>' in the question text."
+        "decided by the session: state the decision in one line with its reason, and act; that never covers a "
+        "confirmation-gated action with no approval on record. A confirmation-gated action, or any other real "
+        "exception, is asked again with 'Basis: <category> - <what differs between the options>' in the "
+        "question text and options that differ in the decision, not in time."
     )
 
 

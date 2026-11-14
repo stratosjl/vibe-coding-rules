@@ -8,6 +8,8 @@ hook in a subprocess, with a temporary anchor, home and transcript, and judge
 each case by the parsed JSON decision and the exit code.
 
   ARM A  denials: that question untagged; the same question tagged "scope";
+         a confirmation-gated question with timing-only labels (v1.35.2:
+         the reason leaves the action unsettled, and its re-ask passes);
          a "(Recommended)" option; an unknown category; a reviewer basis
          with no advisor call, or one only before the operator's last message
   ARM B  allows: a records question with a real basis; a push-and-tag
@@ -150,6 +152,24 @@ def main() -> int:
     texts = [(o or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "") for _, o, _ in denials]
     results.append((all("A denial is never an approval" in x for x in texts) and all(texts),
                     "A8 every deny reason says a denial is never an approval (incl. a push question without a basis)"))
+    # v1.35.2 (VCR-I-32): a valid confirmation-gated basis with timing-only labels is still denied,
+    # but the reason must not call the question "never the operator's", and the re-ask it
+    # prescribes must itself pass the gate.
+    rc, out, _ = run(q(PUSH_Q, [{"label": "Push tonight", "description": "a"},
+                                {"label": "Push tomorrow", "description": "b"}]))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    results.append((decision(out) == "deny" and "Q3" in codes(out)
+                    and "settles nothing about whether the action may be taken" in reason
+                    and "never the operator's question" not in reason
+                    and "never covers a confirmation-gated action" in reason,
+                    "A2b a confirmation-gated basis with timing-only labels: denied, and told the action is not "
+                    "settled, not that it is never the operator's"))
+    ok_example = "'Push and tag' / 'Do not push'" in reason
+    rc2, out2, _ = run(q(PUSH_Q, [{"label": "Push and tag", "description": "a"},
+                                  {"label": "Do not push", "description": "b"}]))
+    results.append((ok_example and decision(out2) == "allow",
+                    f"A2c the re-ask the reason prescribes passes the gate (example in reason: {ok_example}, "
+                    f"decision: {decision(out2)})"))
     expect("A7 a basis with too short a reason",
            run(q("Push?\nBasis: confirmation-gated - tag", PUSH_OPTIONS)), "deny", {"Q1"})
 
