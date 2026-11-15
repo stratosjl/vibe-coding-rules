@@ -4,6 +4,20 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.5
+
+Patch. The question gate's Q4 counts an operator message that is only an image, and three test gaps are closed.
+
+### What changed
+
+- **Q4** (VCR-I-38): a message that carries only a pasted image, typed mid-turn (`queued_command`, `origin.kind: human`) or as a turn of its own, was not counted as an operator message, because `_has_text` needed a text block; an earlier advisor call then stood and a reviewer-basis question was allowed. A top-level image block now counts. A tool's image result is nested inside its `tool_result` block and still does not count (on deskmeet's newest 400 transcripts, 2026-11-15: 252 nested image results, none at top level beside a `tool_result`).
+- **Q1** says «1 character», not «1 characters», for a one-character reason.
+- Tests: A9b and A9c (image-only operator message after an advisor call, deny) and A7d (the singular) fail on the 1.35.4 hook; B10 (a tool result carrying an image, allow) fails when any non-empty content counts; A4b asserts the unknown-category text (VCR-I-41: no test did); D4b asserts that G8 fails a waiting line whose basis category is not on the list (VCR-I-39: no test failed when that check was removed).
+
+### Evidence
+
+- VCR-I-38 was found by the audit pass of 1.35.3, VCR-I-39 by the ASUS repeat of the 1.35.1 audit pass, VCR-I-41 by the audit pass of 1.35.4.
+
 ## v1.35.4
 
 Patch. The question gate's Q1 says when a basis has a valid category and too short a reason.

@@ -33,6 +33,7 @@ holds for any question:
       shows no `advisor` call since the last operator message. Since v1.35.3
       a message typed while a turn runs (a `queued_command` attachment with
       `origin.kind: human`) is an operator message; a cross-session one is not.
+      Since v1.35.5 a message that is only an image counts as well.
 
 What it cannot see, stated so nobody relies on it: a question asked in plain
 prose rather than through AskUserQuestion; whether the stated category is
@@ -133,10 +134,14 @@ def read_tier(session_id: str) -> Optional[str]:
 
 
 def _has_text(content: Any) -> bool:
+    """Content the operator wrote or pasted. Since v1.35.5 (VCR-I-38) a top-level
+    image block counts, so a message that is only a pasted screenshot is an
+    operator message; a tool's image result is nested inside its tool_result
+    block and still does not count."""
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
-        return any(isinstance(b, dict) and b.get("type") == "text" for b in content)
+        return any(isinstance(b, dict) and b.get("type") in ("text", "image") for b in content)
     return False
 
 
@@ -198,7 +203,8 @@ def problems(tool_input: Any, transcript_path: str) -> list[str]:
             if m and cat not in BASIS_CATEGORIES:
                 cause = f" (category '{cat}' is not on the list)"
             elif m:
-                cause = (f" (the reason '{m.group(2)}' is {len(m.group(2))} characters; "
+                n_chars = len(m.group(2))
+                cause = (f" (the reason '{m.group(2)}' is {n_chars} character{'' if n_chars == 1 else 's'}; "
                          f"at least {MIN_REASON_CHARS} are needed, saying what differs between the options)")
             else:
                 cause = ""

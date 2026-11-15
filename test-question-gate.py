@@ -115,6 +115,16 @@ QUEUED_PEER = {"type": "attachment", "attachment": {"type": "queued_command", "i
 QUEUED_TASK = {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "<task-notification/>",
                                                      "origin": {"kind": "task-notification", "producer": "session-task"}}}
 
+# v1.35.5 (VCR-I-38): an operator message can carry only an image (a pasted screenshot);
+# shapes as recorded on deskmeet 2026-11-15: top-level image blocks in the message or the
+# queued prompt, while a tool's image result is nested inside its tool_result block.
+IMAGE_BLOCK = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+QUEUED_HUMAN_IMAGE = {"type": "attachment", "attachment": {"type": "queued_command", "prompt": [IMAGE_BLOCK],
+                                                            "commandMode": "prompt", "origin": {"kind": "human"}}}
+OPERATOR_IMAGE = {"type": "user", "message": {"role": "user", "content": [IMAGE_BLOCK]}}
+TOOL_RESULT_IMAGE = {"type": "user", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "t2", "content": [IMAGE_BLOCK]}]}}
+
 RECORDS_Q = ("Should I record this sitting, or leave the records as they are?\n"
              "Basis: scope - the goal covered the audit and floor only; recording adds commits and an upload "
              "the goal did not include")
@@ -148,6 +158,13 @@ def main() -> int:
            "deny", {"Q2"})
     expect("A4 a category not on the list",
            run(q("Which order?\nBasis: engineering - two equally good orders", RECORDS_OPTIONS)), "deny", {"Q1"})
+    # v1.35.5 (VCR-I-41): the unknown-category cause text is asserted, not only the deny.
+    rc, out, _ = run(q("Which order?\nBasis: engineering - two equally good orders", RECORDS_OPTIONS))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+    results.append((decision(out) == "deny" and "(category 'engineering' is not on the list)" in q1
+                    and "characters" not in q1,
+                    f"A4b an unknown category is named as not on the list: {q1!r}"))
     expect("A5 reviewer basis, no advisor call at all",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR]), "deny", {"Q4"})
     expect("A6 reviewer basis, advisor only before the operator's last message",
@@ -186,6 +203,12 @@ def main() -> int:
     expect("A9 reviewer basis, advisor call, then an operator message typed mid-turn (queued_command, human)",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_HUMAN]),
            "deny", {"Q4"})
+    expect("A9b reviewer basis, advisor call, then a mid-turn operator message that is only an image",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_HUMAN_IMAGE]),
+           "deny", {"Q4"})
+    expect("A9c reviewer basis, advisor call, then an operator message that is only an image",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, OPERATOR_IMAGE]),
+           "deny", {"Q4"})
     expect("A7 a basis with too short a reason",
            run(q("Push?\nBasis: confirmation-gated - tag", PUSH_OPTIONS)), "deny", {"Q1"})
     # v1.35.4 (VCR-I-36): a valid category with a short reason is named as such, so the
@@ -198,6 +221,11 @@ def main() -> int:
                     f"A7b a valid category with a short reason names the reason and the minimum: {q1!r}"))
     rc, out, _ = run(q("Push?\nBasis: confirmation-gated - ships a tag to every node at the nightly", PUSH_OPTIONS))
     results.append((decision(out) == "allow", f"A7b re-ask with the reason lengthened is allowed: {decision(out)}"))
+    rc, out, _ = run(q("Push?\nBasis: confirmation-gated - x", PUSH_OPTIONS))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+    results.append((decision(out) == "deny" and "reason 'x' is 1 character;" in q1,
+                    f"A7d a one-character reason is counted in the singular: {q1!r}"))
     rc, out, _ = run(q("Push the branch?", PUSH_OPTIONS))
     reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
     q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
@@ -217,6 +245,8 @@ def main() -> int:
                                                      if k != "isMeta"}}]), "allow")
     expect("B8 reviewer basis, advisor call, then a task notification (queued_command)",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_TASK]), "allow")
+    expect("B10 reviewer basis, advisor call, then a tool result carrying an image (not an operator message)",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT_IMAGE]), "allow")
     expect("B9 reviewer basis, operator message typed mid-turn, then an advisor call",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, QUEUED_HUMAN, ADVISOR, TOOL_RESULT]), "allow")
     expect("B4 the untagged question below T4", run(q(TONIGHT, TONIGHT_OPTIONS), tier="T3"), "allow")
@@ -252,8 +282,11 @@ def main() -> int:
         bad = "4. Awaiting the operator, not to be started without the go: the public release for the import drop."
         good = ("4. Ask the operator before the GitHub push and the tag. Basis: confirmation-gated - a tag "
                 "ships to every node.")
+        # v1.35.5 (VCR-I-39): a basis whose category is not on the list fails G8 too.
+        unknown = ("4. Ask the operator before the GitHub push and the tag. Basis: timing - after the "
+                   "nightly has run on every node.")
         fails = {}
-        for label, line in (("bad", bad), ("good", good)):
+        for label, line in (("bad", bad), ("good", good), ("unknown", unknown)):
             p = Path(d) / label
             p.mkdir()
             f = p / name
@@ -261,6 +294,8 @@ def main() -> int:
             fails[label] = {c for c, s, _ in checker.check(f) if s == "FAIL"}
         results.append((fails["bad"] == {"G8"} and fails["good"] == set(),
                         f"D4 G8 fails the 2026-11-15 step-4 line and passes a based one ({fails})"))
+        results.append((fails["unknown"] == {"G8"},
+                        f"D4b G8 fails a waiting line whose basis category is not on the list ({fails['unknown']})"))
 
     fails = 0
     for ok, msg in results:
