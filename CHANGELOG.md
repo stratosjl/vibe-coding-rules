@@ -11,7 +11,7 @@ Patch. The question gate's Q4 now counts a message the operator types while a tu
 ### What changed
 
 - **Q4** (a reviewer basis needs an `advisor` call since the operator's last message) reset only on `user` transcript entries. A message typed mid-turn is stored as an `attachment` entry of type `queued_command` with `origin.kind: human`, so an advisor call made before it still satisfied Q4 for a question asked after it. Such an entry now counts as an operator message. A cross-session message (`origin.kind: peer`, `isMeta`) and a task notification use the same entry type and still do not count.
-- `test-question-gate.py` gains A9 (advisor call, then a mid-turn operator message: denied, Q4), B7 and B8 (advisor call, then a cross-session message or a task notification: allowed) and B9 (mid-turn operator message, then an advisor call: allowed). A9 fails on the 1.35.2 hook.
+- `test-question-gate.py` gains A9 (advisor call, then a mid-turn operator message: denied, Q4), B7, B7b and B8 (advisor call, then a cross-session message, with or without `isMeta`, or a task notification: allowed) and B9 (mid-turn operator message, then an advisor call: allowed). A9 fails on the 1.35.2 hook.
 
 ### Evidence
 

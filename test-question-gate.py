@@ -195,6 +195,10 @@ def main() -> int:
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT]), "allow")
     expect("B7 reviewer basis, advisor call, then a cross-session message (queued_command, peer)",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_PEER]), "allow")
+    expect("B7b the same cross-session message without isMeta (the origin kind alone decides)",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT,
+               {"type": "attachment", "attachment": {k: v for k, v in QUEUED_PEER["attachment"].items()
+                                                     if k != "isMeta"}}]), "allow")
     expect("B8 reviewer basis, advisor call, then a task notification (queued_command)",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_TASK]), "allow")
     expect("B9 reviewer basis, operator message typed mid-turn, then an advisor call",
