@@ -215,6 +215,15 @@ def main() -> int:
     original = M.load_slice
     old_home = os.environ.get("HOME")
     sys_stdin = sys.stdin
+    # v1.35.6 (VCR-I-44): LOG_PATH and PUBLISH_STATE_PATH were fixed from the real home
+    # when the module was imported, so setting HOME below does not move them; point
+    # them at the temporary home, or this call writes a row into the operator's log.
+    old_paths = (M.LOG_PATH, M.PUBLISH_STATE_PATH)
+    temp_log = home / ".claude" / "methodology-hook.log"
+    temp_log.parent.mkdir(parents=True, exist_ok=True)
+    temp_log.unlink(missing_ok=True)
+    setattr(M, "LOG_PATH", temp_log)
+    setattr(M, "PUBLISH_STATE_PATH", home / ".claude" / "vc-roe-publish-state.json")
     setattr(M, "load_slice", lambda _tier: big)
     try:
         os.environ["HOME"] = str(home)
@@ -226,7 +235,12 @@ def main() -> int:
         ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
         check(f"only {M.SLICE_PARTS_MAX} are injected" in ctx and "Read the whole slice" in ctx,
               "--split block tells the model to read the whole slice")
+        logged = temp_log.read_text(encoding="utf-8") if temp_log.exists() else ""
+        check('"test-split-over"' in logged,
+              "the in-process call logs to the temporary home, not the real one (VCR-I-44)")
     finally:
+        setattr(M, "LOG_PATH", old_paths[0])
+        setattr(M, "PUBLISH_STATE_PATH", old_paths[1])
         setattr(M, "load_slice", original)
         sys.stdin = sys_stdin
         os.environ.pop("CLAUDE_TIER", None)
