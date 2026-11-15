@@ -159,32 +159,13 @@ After tagging a release, also sync any managed install copies of the plugin on t
 
 (`detection-rules.json` carries its own independent `version` field tracking the detection-logic schema only; it does not move in lockstep with plugin releases.)
 
-## Optional machine-local SessionStart addon (extension point)
+## Retired: the machine-local SessionStart addon seam
 
-Since v1.15.0 the SessionStart hook exposes a fail-soft extension point so an operator can contribute machine-local session context (infrastructure state, a private resumption audit, environment banners) **without** patching the public hook or shipping anything into this repo.
+From v1.15.0 to v1.35.x the SessionStart hook offered an extension point: if `~/.claude/vc-roe-addons` existed, it put that directory on `sys.path`, imported `vc_roe_local_addons` and spliced the block returned by `session_start_block(detection, tier)` into additionalContext. **v1.36.0 removes it.** The import ran whatever the directory held, at every session start, and on an operator node that directory is another repository's working tree.
 
-The contract is intentionally tiny. At SessionStart, if the directory `~/.claude/vc-roe-addons` exists, the hook puts it on `sys.path` and calls:
-
-```python
-# ~/.claude/vc-roe-addons/vc_roe_local_addons.py
-def session_start_block(detection: dict, tier: str) -> tuple[str, str]:
-    """Return (block, state).
-
-    block: a Markdown string spliced into additionalContext immediately
-           before the "## Tier detection trace" section. Return "" to add
-           nothing. End multi-line blocks with a trailing blank line so the
-           following section stays separated.
-    state: a one-word trace token rendered on the `session_start_addon:` line
-           of the tier-detection trace (e.g. "clean", "drift", "stale").
-    """
-    return ("", "none")
-```
-
-- `detection` is the resolved tier-detection dict (keys include `tier`, `scope`, `crit`, `source`, `signals`, `project_root`); `tier` is the effective tier string.
-- The seam is **opt-in and machine-local**. This repo ships **no** `vc_roe_local_addons` module, and a plain install has no `~/.claude/vc-roe-addons` directory, so the seam is skipped entirely and `session_start_addon:` reads `none`.
-- It is **fully fail-soft**: any import or runtime error degrades to an empty block and `session_start_addon: error`, and never affects session start. This is covered by `test-session-start-addon.py`.
-
-This is the supported way to layer private behaviour onto SessionStart. The "Changes that depend on a private add-on layer being present at runtime" exclusion below still holds: the *hook* must work identically with the addon absent, which the fail-soft contract guarantees.
+- Machine-local session context now comes from a separate plugin with its own SessionStart hook, installed and pinned like any other plugin. This hook does not import, call or read anything under `~/.claude/vc-roe-addons`.
+- The trace keeps both lines with fixed values: `session_start_addon: retired` and `session_start_addon_source: n/a`. Before v1.36.0 a node without the directory read `none`, so `retired` is how a transcript shows the session ran on a release without the seam. `test-session-start-addon.py` asserts that a module planted there is never imported.
+- `~/.claude/vc-roe-addons` is still read by `bin/audit-patterns.sh`, for the publish gate's private overlay and history baseline (see `bin/audit-patterns.local.sh.example` and `test-audit-overlay-lookup.py`). That lookup is unchanged.
 
 ## Don't paste regulator-presentable claims into the public methodology slices
 

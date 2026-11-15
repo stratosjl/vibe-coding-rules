@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-"""Validation runner for the SessionStart machine-local addon extension point
-(v1.15.0).
+"""Validation runner for the retired SessionStart addon seam (v1.36.0).
 
-The SessionStart hook offers an optional, fail-soft extension point: if a
-machine-local module directory exists at ~/.claude/vc-roe-addons, the hook puts
-it on sys.path and calls
-
-    vc_roe_local_addons.session_start_block(detection, tier) -> (block, state)
-
-contributing `block` (an extra additionalContext section) and `state` (a
-one-word trace rendered on the `session_start_addon:` line). Plain public installs
-have no such directory and skip it; any import/runtime error degrades to an
-empty block and the literal state `error`, and never affects session start.
+From v1.15.0 to v1.35.x the SessionStart hook imported
+`vc_roe_local_addons` from ~/.claude/vc-roe-addons whenever that directory
+existed and spliced the block it returned into additionalContext. That ran a
+file from another repository's working tree at every session start. v1.36.0
+removes the import. The directory stays, because bin/audit-patterns.sh reads
+the publish gate's overlay through it (test-audit-overlay-lookup.py covers
+that), but this hook no longer looks at it.
 
 This runner drives hooks/session-start.py as a subprocess against a fake HOME
 (HOME *and* USERPROFILE, per the v1.14.1 Windows divergence: Path.home()
-consults USERPROFILE on Windows) and asserts each branch:
+consults USERPROFILE on Windows) and asserts, for each shape of the directory,
+that the module is never imported (a module that writes a marker file at
+import leaves none), that no block reaches the context, that the trace reads
+`session_start_addon: retired` and `session_start_addon_source: n/a`, and that
+session start is unaffected:
 
-    Case 1  no addon dir          -> state 'none', no addon block
-    Case 2  working addon         -> block present, ordered before the trace,
-                                     state echoed verbatim
-    Case 3  addon raises          -> state 'error', no block, hook still 0/JSON
-    Case 4  module missing        -> state 'error' (ImportError), session intact
+    Case 1  no addon dir
+    Case 2  a module that writes a marker at import and returns a block
+    Case 3  a module that raises at import
+    Case 4  the directory with no module
+
+On the v1.35.x hook Case 2 fails: the marker is written and the block is
+injected.
 
 Cross-platform: pure stdlib, sys.executable (never the broken `python3` alias
 on Windows per the user-global CLAUDE.md rule).
@@ -133,76 +135,54 @@ def run_session_start(home: Path, cwd: Path) -> tuple[int, dict[str, Any], str]:
     return proc.returncode, out, ctx
 
 
-WORKING_ADDON = '''\
+MARKING_ADDON = '''\
+from pathlib import Path
+Path(__file__).with_name("IMPORTED-MARKER").write_text("imported", encoding="utf-8")
+
+
 def session_start_block(detection, tier):
     return ("## Addon block\\n\\nADDON-MARKER-XYZ for tier %s.\\n\\n" % tier, "clean")
 '''
 
 RAISING_ADDON = '''\
-def session_start_block(detection, tier):
-    raise RuntimeError("intentional addon failure")
+from pathlib import Path
+Path(__file__).with_name("IMPORTED-MARKER").write_text("imported", encoding="utf-8")
+raise RuntimeError("intentional addon failure at import")
 '''
+
+
+def check_retired(tag: str, rc: int, ctx: str, home: Path) -> None:
+    addon_dir = home / ".claude" / "vc-roe-addons"
+    check(rc == 0, f"{tag} hook exits 0")
+    check(bool(ctx) and "## Tier detection trace" in ctx, f"{tag} emits the methodology context and trace")
+    check("- session_start_addon: retired\n" in ctx, f"{tag} session_start_addon: retired")
+    check("- session_start_addon_source: n/a\n" in ctx, f"{tag} session_start_addon_source: n/a")
+    check("ADDON-MARKER" not in ctx, f"{tag} no addon block in the context")
+    check(not (addon_dir / "IMPORTED-MARKER").exists(), f"{tag} the module was not imported (no marker file)")
 
 
 def main() -> int:
     _force_utf8_streams()
-    tmp = Path(tempfile.mkdtemp(prefix="vcroe-addon-test-"))
+    tmp = Path(tempfile.mkdtemp(prefix="vcroe-addon-retired-"))
     try:
-        # Case 1: no addon directory -> state 'none', no block.
-        print("Case 1: no addon directory")
-        home = make_home(tmp, "h1", None)
-        cwd = make_cwd(tmp, "c1")
-        rc, out, ctx = run_session_start(home, cwd)
-        check(rc == 0, "C1 hook exits 0")
-        check(bool(ctx), "C1 emits additionalContext")
-        check("- session_start_addon: none" in ctx, "C1 session_start_addon: none")
-        check("ADDON-MARKER" not in ctx, "C1 no addon block leaked")
-
-        # Case 2: working addon -> block present, before trace, state echoed.
-        print("Case 2: working addon")
-        home = make_home(tmp, "h2", WORKING_ADDON)
-        cwd = make_cwd(tmp, "c2")
-        rc, out, ctx = run_session_start(home, cwd)
-        check(rc == 0, "C2 hook exits 0")
-        check("ADDON-MARKER-XYZ" in ctx, "C2 addon block present")
-        check("- session_start_addon: clean" in ctx, "C2 state echoed (clean)")
-        # Block must sit before the tier-detection trace section.
-        i_block = ctx.find("ADDON-MARKER-XYZ")
-        i_trace = ctx.find("## Tier detection trace")
-        check(
-            i_block != -1 and i_trace != -1 and i_block < i_trace,
-            "C2 addon block ordered before tier-detection trace",
-        )
-
-        # Case 3: addon raises in session_start_block -> state 'error', no block.
-        print("Case 3: addon raises")
-        home = make_home(tmp, "h3", RAISING_ADDON)
-        cwd = make_cwd(tmp, "c3")
-        rc, out, ctx = run_session_start(home, cwd)
-        check(rc == 0, "C3 hook exits 0 (fail-soft)")
-        check(bool(ctx), "C3 session start unaffected (context emitted)")
-        check("- session_start_addon: error" in ctx, "C3 session_start_addon: error")
-        check("ADDON-MARKER" not in ctx, "C3 no partial block leaked")
-
-        # Case 4: addon dir exists but module missing -> ImportError -> 'error'.
-        print("Case 4: addon directory present, module missing")
-        home = make_home(tmp, "h4", "__DIR_ONLY__")
-        cwd = make_cwd(tmp, "c4")
-        rc, out, ctx = run_session_start(home, cwd)
-        check(rc == 0, "C4 hook exits 0 (fail-soft)")
-        check("- session_start_addon: error" in ctx, "C4 session_start_addon: error")
+        cases = [("C1", None), ("C2", MARKING_ADDON), ("C3", RAISING_ADDON), ("C4", "__DIR_ONLY__")]
+        for tag, module in cases:
+            print(f"{tag}:")
+            home = make_home(tmp, f"home-{tag}", module)
+            rc, _, ctx = run_session_start(home, make_cwd(tmp, f"cwd-{tag}"))
+            check_retired(tag, rc, ctx, home)
+        src = SESSION_START.read_text(encoding="utf-8")
+        check("import vc_roe_local_addons" not in src and "from vc_roe_local_addons" not in src,
+              "C5 the hook source carries no import statement for the module")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
-    print()
-    print(f"{PASS} pass / {FAIL} fail")
+    print(f"\n{PASS} pass / {FAIL} fail")
     if FAIL:
-        print("FAILURES:")
         for f in FAILURES:
-            print(f"  - {f}")
+            print(f"  FAILED: {f}")
         return 1
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

@@ -705,27 +705,6 @@ _NOT_RUNNABLE_PHASES: dict[str, tuple[str, str]] = {
 }
 
 
-def _describe_addon_module(module: Any) -> str:
-    """`<absolute path> sha256:<12 hex>` for a loaded addon module, or a reason.
-
-    Emitted by the HOOK rather than returned by the addon, because the addon is
-    the thing being attributed. Never raises: attribution failing must not be
-    able to take session start down, so every failure renders as a token.
-    """
-    if module is None:
-        return "loaded-but-unattributable(no module object)"
-    src_path = getattr(module, "__file__", None)
-    if not src_path:
-        return "loaded-but-unattributable(no __file__)"
-    try:
-        import hashlib
-        resolved = Path(src_path).resolve()
-        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()[:12]
-        return f"{resolved} sha256:{digest}"
-    except Exception as e:
-        return f"{src_path} sha256:unreadable({type(e).__name__})"
-
-
 def emit_not_runnable(phase: str, path: Any, reason: str) -> int:
     """Emit a LOUD not-runnable context instead of returning silently.
 
@@ -1644,67 +1623,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     slice_content = load_slice(tier)
     slice_parts = split_slice(slice_content)
 
-    # Optional machine-local SessionStart addon (extension point). An install
-    # that carries a private extension module at ~/.claude/vc-roe-addons may
-    # contribute an extra context block (e.g. infrastructure-specific session
-    # context) and a one-word trace state. Plain public installs have no such
-    # directory and skip this entirely. Fully fail-soft: any import or runtime
-    # issue degrades to an empty block and never affects session start.
-    addon_block, addon_state = "", "none"
+    # The machine-local SessionStart addon seam is retired (v1.36.0). Until
+    # then this hook appended ~/.claude/vc-roe-addons to sys.path, imported
+    # vc_roe_local_addons from it and spliced its block into the context, so a
+    # file in another repository's working tree ran at every session start on
+    # every node where that directory existed. A companion plugin renders its
+    # own block from its own installed hook instead. The directory itself is
+    # still read by bin/audit-patterns.sh for the publish gate's overlay; this
+    # hook no longer looks at it. The two trace lines stay, with fixed values,
+    # so a transcript shows which side of the change a session ran on: before
+    # it a node without the directory read `none`, now every node reads
+    # `retired`.
+    addon_state = "retired"
     addon_source = "n/a"
-    try:
-        _addon_dir = Path.home() / ".claude" / "vc-roe-addons"
-        if _addon_dir.is_dir():
-            # Set before the import so that an addon which fails to import is
-            # distinguishable in the trace from "there is no addon directory".
-            addon_source = f"{_addon_dir} (module not loaded)"
-            if str(_addon_dir) not in sys.path:
-                # vc-roe:runtime-state operator-local extension point, not a code
-                # dependency of any check. Its three states (absent / error /
-                # loaded) are DISTINGUISHABLE in the trace as session_start_addon,
-                # and none of them changes the verdict of anything, which is what
-                # the F-EXIT-01 contract actually requires.
-                #
-                # APPEND, never insert(0). Position 0 puts this directory ahead of
-                # the STDLIB for the rest of the process, and this hook goes on to
-                # lazily `import ctypes` inside read_pid_starttime() and
-                # is_pid_alive() on the Windows node. Measured 2026-09-04: a
-                # ctypes.py placed in the addon directory was imported in place of
-                # the stdlib module, and the liveness probe then reported a live
-                # owner as dead; with the same file removed the shadow did not
-                # fire, so the directory position was the variable. Appending
-                # leaves the stdlib and site-packages earlier in the search order
-                # while still resolving the addon and the siblings it imports
-                # alongside itself, which spec_from_file_location would not.
-                # vc-roe:runtime-state: the addon seam, explained above.
-                sys.path.append(str(_addon_dir))
-            from vc_roe_local_addons import session_start_block  # type: ignore
-            # F027 attribution. The addon's block is spliced verbatim into the
-            # governed additionalContext, and until v1.27.0 the ONLY record of it
-            # was the one-word state token -- which the addon RETURNS, so the
-            # 'three distinguishable states' defence rested on the addon behaving.
-            # These two facts are taken BY THE HOOK from the imported module, so
-            # an addon cannot report a source it does not have, and an injected
-            # block is attributable to a file and a revision from the transcript
-            # alone. Read before the call, so it survives a raising addon.
-            addon_source = _describe_addon_module(
-                sys.modules.get("vc_roe_local_addons")
-            )
-            addon_block, addon_state = session_start_block(detection, tier)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except BaseException:
-        # BaseException, not Exception: a Rust-backed extension (pyo3) raises
-        # PanicException, whose MRO is [PanicException, BaseException, object],
-        # deliberately OUTSIDE Exception so ordinary handlers do not swallow it.
-        # An addon importing calamine, polars, pydantic-core, orjson or
-        # cryptography could therefore panic straight through a bare
-        # `except Exception` and take SessionStart down with it -- in the one
-        # block whose stated contract is "never affects session start". The
-        # re-raise above keeps Ctrl-C and sys.exit() working; widening without
-        # it makes the hook unkillable, which is a worse fault than the one
-        # being fixed.
-        addon_block, addon_state = "", "error"
 
     # v1.3.0: chat-claim acquire (multi-chat-access protection per
     # OBS-vcroe-multi-chat-contamination-01). SessionStart writes a claim
@@ -1854,7 +1785,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"{gate_banner_text}"
         f"## Methodology in force: {tier} {sc_trace}\n\n"
         f"{slice_section}"
-        f"{addon_block}"
         f"## Tier detection trace\n"
         f"- effective_tier: {tier}\n"
         f"- scope: {s or 'n/a'}\n"

@@ -4,6 +4,23 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.36.0
+
+Minor. The SessionStart hook no longer imports a machine-local addon module; the documented extension point is removed.
+
+### What changed
+
+- **Removed:** the block in `hooks/session-start.py` that appended `~/.claude/vc-roe-addons` to `sys.path`, imported `vc_roe_local_addons` and spliced its `session_start_block(detection, tier)` result into additionalContext, and its helper `_describe_addon_module`. On a node where that directory exists it held another repository's working tree, so its uncommitted code ran at every session start. Machine-local context now comes from a separate plugin with its own SessionStart hook.
+- **Trace:** `session_start_addon` reads `retired` and `session_start_addon_source` reads `n/a` on every node. A node without the directory read `none` before, so `retired` shows the session ran without the seam.
+- **Unchanged:** `bin/audit-patterns.sh` still reads the publish gate's overlay and history baseline through `~/.claude/vc-roe-addons`. `resolve_effective_tier(cwd, env, rules, persist=False)` and `detection-rules.json` are unchanged.
+- **Methodology text:** T3 item 12 and its summary in T4 said infrastructure-specific resumption state is supplied through the addon seam; they now say it is supplied machine-locally, outside this plugin.
+- `test-session-start-addon.py` is rewritten: for no directory, a module that writes a marker at import, a module that raises at import, and an empty directory, the module is never imported, no block is injected, the trace reads `retired` / `n/a`, and session start is unaffected. On the 1.35.3 and 1.35.7 hooks it fails 11 of 25 checks.
+- CONTRIBUTING's section on the seam now records its removal.
+
+### Known cost
+
+- A Kimi session gets no machine-local block unless such a plugin is installed under Kimi.
+
 ## v1.35.7
 
 Patch. The regression floor leaves nothing in the temp directory, a new suite fails if it does, and two question-gate behaviours that no test pinned are now tested and documented.

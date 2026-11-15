@@ -192,9 +192,10 @@ def run_hook(cwd: str, home: Path, hook_tmp: Path) -> dict[str, Any]:
     them here is the whole fix and the existing shutil.rmtree(parent) in
     main() is the whole teardown.
 
-    Isolating also makes the parse hermetic: a real home carries
-    ~/.claude/vc-roe-addons, whose injected block would otherwise sit in the
-    additionalContext that parse_additional searches.
+    Isolating also makes the parse hermetic. Until v1.36.0 a real home's
+    ~/.claude/vc-roe-addons injected a block into the additionalContext that
+    parse_additional searches; the hook no longer reads it, but the real home
+    still holds floor and claim files this run must not touch.
 
     Same shape as test-chat-claim.py:199-208, whose comment records why both
     HOME and USERPROFILE are needed: Path.home() consults HOME on POSIX and
