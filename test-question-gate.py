@@ -12,6 +12,7 @@ each case by the parsed JSON decision and the exit code.
          the reason leaves the action unsettled, and its re-ask passes);
          a "(Recommended)" option; an unknown category; a reviewer basis
          with no advisor call, or one only before the operator's last message
+         (v1.35.3: a message typed mid-turn, stored as a queued_command, counts)
   ARM B  allows: a records question with a real basis; a push-and-tag
          question; a reviewer basis after an advisor call; below T4; no
          anchor; another tool
@@ -101,6 +102,17 @@ ADVISOR = {"type": "assistant", "message": {"role": "assistant", "content": [
     {"type": "server_tool_use", "id": "srvtoolu_x", "name": "advisor", "input": {}}]}}
 TOOL_RESULT = {"type": "user", "message": {"role": "user", "content": [
     {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
+# v1.35.3 (VCR-I-34): a message the operator types while a turn runs is stored as an
+# `attachment` entry of type `queued_command` with `origin.kind: human`; a cross-session
+# message and a task notification take the same entry type with another origin kind.
+# Shapes as recorded by Claude Code on deskmeet, 2026-11-15 (bodies shortened).
+QUEUED_HUMAN = {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "stop, wait for me",
+                                                      "commandMode": "prompt", "origin": {"kind": "human"}}}
+QUEUED_PEER = {"type": "attachment", "attachment": {"type": "queued_command", "isMeta": True,
+                                                     "prompt": "<cross-session-message from=\"uds:x\">hi</cross-session-message>",
+                                                     "origin": {"kind": "peer", "name": "peer-1"}}}
+QUEUED_TASK = {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "<task-notification/>",
+                                                     "origin": {"kind": "task-notification", "producer": "session-task"}}}
 
 RECORDS_Q = ("Should I record this sitting, or leave the records as they are?\n"
              "Basis: scope - the goal covered the audit and floor only; recording adds commits and an upload "
@@ -170,6 +182,9 @@ def main() -> int:
     results.append((ok_example and decision(out2) == "allow",
                     f"A2c the re-ask the reason prescribes passes the gate (example in reason: {ok_example}, "
                     f"decision: {decision(out2)})"))
+    expect("A9 reviewer basis, advisor call, then an operator message typed mid-turn (queued_command, human)",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_HUMAN]),
+           "deny", {"Q4"})
     expect("A7 a basis with too short a reason",
            run(q("Push?\nBasis: confirmation-gated - tag", PUSH_OPTIONS)), "deny", {"Q1"})
 
@@ -178,6 +193,12 @@ def main() -> int:
     expect("B2 a push-and-tag question", run(q(PUSH_Q, PUSH_OPTIONS)), "allow")
     expect("B3 reviewer basis after an advisor call (tool results do not reset it)",
            run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT]), "allow")
+    expect("B7 reviewer basis, advisor call, then a cross-session message (queued_command, peer)",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_PEER]), "allow")
+    expect("B8 reviewer basis, advisor call, then a task notification (queued_command)",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, ADVISOR, TOOL_RESULT, QUEUED_TASK]), "allow")
+    expect("B9 reviewer basis, operator message typed mid-turn, then an advisor call",
+           run(q(REVIEWER_Q, REVIEWER_OPTIONS), transcript=[OPERATOR, QUEUED_HUMAN, ADVISOR, TOOL_RESULT]), "allow")
     expect("B4 the untagged question below T4", run(q(TONIGHT, TONIGHT_OPTIONS), tier="T3"), "allow")
     expect("B5 no anchor for the session", run(q(TONIGHT, TONIGHT_OPTIONS), tier=None), "allow")
     expect("B6 another tool", run({"command": "ls"}, tool_name="Bash"), "allow")

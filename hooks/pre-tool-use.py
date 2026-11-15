@@ -29,7 +29,9 @@ holds for any question:
       time (a valid confirmation-gated basis with "Push tonight" / "Push
       tomorrow" was otherwise told it was "never the operator's question");
   Q4  the basis is a reviewer one (REVIEWER_CATEGORIES) and the transcript
-      shows no `advisor` call since the last operator message.
+      shows no `advisor` call since the last operator message. Since v1.35.3
+      a message typed while a turn runs (a `queued_command` attachment with
+      `origin.kind: human`) is an operator message; a cross-session one is not.
 
 What it cannot see, stated so nobody relies on it: a question asked in plain
 prose rather than through AskUserQuestion; whether the stated category is
@@ -129,16 +131,29 @@ def read_tier(session_id: str) -> Optional[str]:
     return None
 
 
-def _is_operator_message(entry: dict[str, Any]) -> bool:
-    """A user-role transcript entry that carries text, not only tool results."""
-    if entry.get("type") != "user" or entry.get("isMeta"):
-        return False
-    content = (entry.get("message") or {}).get("content")
+def _has_text(content: Any) -> bool:
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
         return any(isinstance(b, dict) and b.get("type") == "text" for b in content)
     return False
+
+
+def _is_operator_message(entry: dict[str, Any]) -> bool:
+    """A user-role transcript entry that carries text, not only tool results, or
+    (v1.35.3, VCR-I-34) a message the operator typed while a turn was running:
+    an `attachment` entry of type `queued_command` whose `origin.kind` is
+    `human`. A cross-session message (`peer`) or a task notification takes the
+    same entry type with another origin kind and does not count."""
+    if entry.get("type") == "attachment":
+        att = entry.get("attachment")
+        if not isinstance(att, dict) or att.get("type") != "queued_command" or att.get("isMeta"):
+            return False
+        origin = att.get("origin")
+        return isinstance(origin, dict) and origin.get("kind") == "human" and _has_text(att.get("prompt"))
+    if entry.get("type") != "user" or entry.get("isMeta"):
+        return False
+    return _has_text((entry.get("message") or {}).get("content"))
 
 
 def advisor_since_last_operator_message(transcript_path: str) -> Optional[bool]:

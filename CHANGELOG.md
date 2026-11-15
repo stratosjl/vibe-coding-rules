@@ -4,6 +4,19 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.3
+
+Patch. The question gate's Q4 now counts a message the operator types while a turn is running.
+
+### What changed
+
+- **Q4** (a reviewer basis needs an `advisor` call since the operator's last message) reset only on `user` transcript entries. A message typed mid-turn is stored as an `attachment` entry of type `queued_command` with `origin.kind: human`, so an advisor call made before it still satisfied Q4 for a question asked after it. Such an entry now counts as an operator message. A cross-session message (`origin.kind: peer`, `isMeta`) and a task notification use the same entry type and still do not count.
+- `test-question-gate.py` gains A9 (advisor call, then a mid-turn operator message: denied, Q4), B7 and B8 (advisor call, then a cross-session message or a task notification: allowed) and B9 (mid-turn operator message, then an advisor call: allowed). A9 fails on the 1.35.2 hook.
+
+### Evidence
+
+- Found at the 1.35.2 close by re-measuring Q4 on a real transcript (VCR-I-34). On that transcript the 1.35.2 hook reports an advisor call since the operator's last message after the mid-turn message, and 1.35.3 does not.
+
 ## v1.35.2
 
 Patch. The question gate's Q3 reason no longer tells a confirmation-gated question that it is "never the operator's question".
