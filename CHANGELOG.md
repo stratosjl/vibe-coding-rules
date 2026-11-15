@@ -4,6 +4,19 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.4
+
+Patch. The question gate's Q1 says when a basis has a valid category and too short a reason.
+
+### What changed
+
+- **Q1** denied «Basis: confirmation-gated - ships a tag» with the same line as a question carrying no basis at all, so the session could not tell a short reason from a missing line. When the category is valid and the reason is under `MIN_REASON_CHARS` (15), the deny line now quotes the reason, gives its length and the minimum. When the category is not on the list it still says so; a question with no basis line keeps the generic text. When Q1 fires is unchanged.
+- `test-question-gate.py` gains A7b (a valid category with an 11-character reason: the deny line names the reason, its length and the minimum; the re-ask with the reason lengthened is allowed) and A7c (no basis line: the generic text, no length claim). A7b fails on the 1.35.3 hook.
+
+### Evidence
+
+- Found by the audit pass of 1.35.2 (VCR-I-36): the short-reason case was denied with the generic line.
+
 ## v1.35.3
 
 Patch. The question gate's Q4 now counts a message the operator types while a turn is running.

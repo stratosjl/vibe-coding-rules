@@ -17,7 +17,8 @@ holds for any question:
 
   Q1  the question text carries no line `Basis: <category> - <what differs>`
       whose category is one of BASIS_CATEGORIES, with a reason of at least
-      MIN_REASON_CHARS characters;
+      MIN_REASON_CHARS characters (since v1.35.4 the deny line names which of
+      the two failed);
   Q2  an option label carries "(Recommended)": inside the delegated remit a
       recommendation is the answer, so a recommended option means the
       question should not be asked;
@@ -192,8 +193,17 @@ def problems(tool_input: Any, transcript_path: str) -> list[str]:
         cat = m.group(1).lower() if m else None
         valid = bool(m) and cat in BASIS_CATEGORIES and len(m.group(2)) >= MIN_REASON_CHARS
         if not valid:
+            # v1.35.4 (VCR-I-36): name the cause, so a short reason under a valid category
+            # cannot be mistaken for a missing line.
+            if m and cat not in BASIS_CATEGORIES:
+                cause = f" (category '{cat}' is not on the list)"
+            elif m:
+                cause = (f" (the reason '{m.group(2)}' is {len(m.group(2))} characters; "
+                         f"at least {MIN_REASON_CHARS} are needed, saying what differs between the options)")
+            else:
+                cause = ""
             out.append(f"Q1 question {n}: no valid 'Basis: <category> - <what differs between the options>' line"
-                       + (f" (category '{cat}' is not on the list)" if m and cat not in BASIS_CATEGORIES else ""))
+                       + cause)
         if any(RECOMMENDED_RE.search(lbl) for lbl in labels):
             if valid:
                 # v1.35.1: a question with a valid basis stays the operator's; the label

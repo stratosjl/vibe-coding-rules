@@ -12,7 +12,8 @@ each case by the parsed JSON decision and the exit code.
          the reason leaves the action unsettled, and its re-ask passes);
          a "(Recommended)" option; an unknown category; a reviewer basis
          with no advisor call, or one only before the operator's last message
-         (v1.35.3: a message typed mid-turn, stored as a queued_command, counts)
+         (v1.35.3: a message typed mid-turn, stored as a queued_command, counts);
+         a short reason under a valid category named as such (v1.35.4)
   ARM B  allows: a records question with a real basis; a push-and-tag
          question; a reviewer basis after an advisor call; below T4; no
          anchor; another tool
@@ -187,6 +188,21 @@ def main() -> int:
            "deny", {"Q4"})
     expect("A7 a basis with too short a reason",
            run(q("Push?\nBasis: confirmation-gated - tag", PUSH_OPTIONS)), "deny", {"Q1"})
+    # v1.35.4 (VCR-I-36): a valid category with a short reason is named as such, so the
+    # session can tell it from a missing line; a missing line keeps the generic text.
+    rc, out, _ = run(q("Push?\nBasis: confirmation-gated - ships a tag", PUSH_OPTIONS))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+    results.append((decision(out) == "deny" and "reason 'ships a tag' is 11 characters" in q1
+                    and "at least 15" in q1,
+                    f"A7b a valid category with a short reason names the reason and the minimum: {q1!r}"))
+    rc, out, _ = run(q("Push?\nBasis: confirmation-gated - ships a tag to every node at the nightly", PUSH_OPTIONS))
+    results.append((decision(out) == "allow", f"A7b re-ask with the reason lengthened is allowed: {decision(out)}"))
+    rc, out, _ = run(q("Push the branch?", PUSH_OPTIONS))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+    results.append((decision(out) == "deny" and "no valid 'Basis:" in q1 and "characters" not in q1,
+                    f"A7c no basis line keeps the generic Q1 text with no length claim: {q1!r}"))
 
     # ARM B: allows
     expect("B1 the records question with a real basis", run(q(RECORDS_Q, RECORDS_OPTIONS)), "allow")
