@@ -18,7 +18,8 @@ holds for any question:
   Q1  the question text carries no line `Basis: <category> - <what differs>`
       whose category is one of BASIS_CATEGORIES, with a reason of at least
       MIN_REASON_CHARS characters (since v1.35.4 the deny line names which of
-      the two failed);
+      the two failed; since v1.35.6 the whole line, reason included, is one
+      line of the text, and a blank reason is named as missing);
   Q2  an option label carries "(Recommended)": inside the delegated remit a
       recommendation is the answer, so a recommended option means the
       question should not be asked;
@@ -95,8 +96,11 @@ BASIS_CATEGORIES = {
 }
 REVIEWER_CATEGORIES = {"reviewer-only-operator-knows", "reviewer-conflict"}
 
-BASIS_RE = re.compile(r"^\s*\**\s*Basis\s*\**\s*:\s*\**\s*([A-Za-z-]+)\s*\**\s*[-–—:]+\s*(.+?)\s*$",
-                      re.IGNORECASE | re.MULTILINE)
+# v1.35.6 (VCR-I-43, VCR-I-45): matched against ONE line at a time (see _basis_match),
+# never across the text, so the next line cannot be read as the reason, the category
+# or the dash; the reason may be empty so a blank one can be named as missing.
+BASIS_RE = re.compile(r"^\s*\**\s*Basis\s*\**\s*:\s*\**\s*([A-Za-z-]+)\s*\**\s*[-–—:]+\s*(.*?)\s*$",
+                      re.IGNORECASE)
 RECOMMENDED_RE = re.compile(r"\(\s*recommended\s*\)", re.IGNORECASE)
 TIMING_RE = re.compile(
     r"\b(now|later|tonight|tomorrow|today|next (session|sitting|time|week)|defer\w*|postpone\w*|"
@@ -188,23 +192,39 @@ def advisor_since_last_operator_message(transcript_path: str) -> Optional[bool]:
     return seen
 
 
+def _basis_match(text: str) -> "re.Match[str] | None":
+    """The first line of `text` that is a Basis line. str.splitlines() splits on every
+    line boundary Python knows (LF, CR, CRLF, VT, FF, FS, GS, RS, NEL, U+2028, U+2029),
+    so no match can span two lines whatever separator the question uses (VCR-I-45)."""
+    for line in text.splitlines():
+        m = BASIS_RE.match(line)
+        if m:
+            return m
+    return None
+
+
 def problems(tool_input: Any, transcript_path: str) -> list[str]:
     out: list[str] = []
     questions = (tool_input or {}).get("questions") or []
     for n, q in enumerate(questions, 1):
         text = str(q.get("question", ""))
         labels = [str(o.get("label", "")) for o in (q.get("options") or [])]
-        m = BASIS_RE.search(text)
+        m = _basis_match(text)
         cat = m.group(1).lower() if m else None
-        valid = bool(m) and cat in BASIS_CATEGORIES and len(m.group(2)) >= MIN_REASON_CHARS
+        why = m.group(2).strip() if m else ""
+        valid = bool(m) and cat in BASIS_CATEGORIES and len(why) >= MIN_REASON_CHARS
         if not valid:
             # v1.35.4 (VCR-I-36): name the cause, so a short reason under a valid category
             # cannot be mistaken for a missing line.
             if m and cat not in BASIS_CATEGORIES:
                 cause = f" (category '{cat}' is not on the list)"
+            elif m and not why:
+                # v1.35.6 (VCR-I-43): a blank reason is missing, not one character long.
+                cause = (" (the reason is missing: after the dash, on the Basis line itself, "
+                         "say what differs between the options)")
             elif m:
-                n_chars = len(m.group(2))
-                cause = (f" (the reason '{m.group(2)}' is {n_chars} character{'' if n_chars == 1 else 's'}; "
+                n_chars = len(why)
+                cause = (f" (the reason '{why}' is {n_chars} character{'' if n_chars == 1 else 's'}; "
                          f"at least {MIN_REASON_CHARS} are needed, saying what differs between the options)")
             else:
                 cause = ""

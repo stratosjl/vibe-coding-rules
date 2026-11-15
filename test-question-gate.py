@@ -13,7 +13,9 @@ each case by the parsed JSON decision and the exit code.
          a "(Recommended)" option; an unknown category; a reviewer basis
          with no advisor call, or one only before the operator's last message
          (v1.35.3: a message typed mid-turn, stored as a queued_command, counts);
-         a short reason under a valid category named as such (v1.35.4)
+         a short reason under a valid category named as such (v1.35.4);
+         a blank reason named as missing, and a Basis line split across
+         lines, at any line boundary str.splitlines() knows, denied (v1.35.6)
   ARM B  allows: a records question with a real basis; a push-and-tag
          question; a reviewer basis after an advisor call; below T4; no
          anchor; another tool
@@ -231,6 +233,40 @@ def main() -> int:
     q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
     results.append((decision(out) == "deny" and "no valid 'Basis:" in q1 and "characters" not in q1,
                     f"A7c no basis line keeps the generic Q1 text with no length claim: {q1!r}"))
+    # v1.35.6 (VCR-I-43): a blank reason is named as missing, not counted as one character.
+    for tag, text in (("A7e", "Push?\nBasis: confirmation-gated - "),
+                      ("A7f", "Push?\nBasis: confirmation-gated -")):
+        rc, out, _ = run(q(text, PUSH_OPTIONS))
+        reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+        results.append((decision(out) == "deny" and "reason is missing" in q1 and "character" not in q1,
+                        f"{tag} a blank reason is named as missing: {text!r} -> {q1!r}"))
+    # v1.35.6 (VCR-I-45): no part of the Basis line may cross a line break, so the next
+    # line is never read as the reason, the category, or the dash.
+    for tag, text, cause in (
+            ("A7g", "Basis: confirmation-gated -\nShould the release go out with the new hook?", "reason is missing"),
+            ("A7h", "Basis: confirmation-gated - \nShould the release go out with the new hook?", "reason is missing"),
+            ("A7i", "Push?\nBasis: confirmation-gated\n- ships a tag to every node at the nightly", ""),
+            ("A7j", "Push?\nBasis:\nconfirmation-gated - ships a tag to every node at the nightly", "")):
+        rc, out, _ = run(q(text, PUSH_OPTIONS))
+        reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+        results.append((decision(out) == "deny" and "Q1" in codes(out) and cause in q1,
+                        f"{tag} a Basis line split across lines is denied Q1: {text!r} -> {decision(out)} {q1!r}"))
+    # Every line boundary str.splitlines() knows ends the Basis line, not only LF.
+    for sep_name, sep in (("CR", "\r"), ("VT", "\v"), ("FF", "\f"), ("FS", "\x1c"), ("GS", "\x1d"),
+                          ("RS", "\x1e"), ("NEL", "\x85"), ("LS", " "), ("PS", " ")):
+        text = f"Basis: confirmation-gated -{sep}Should the release go out with the new hook?"
+        rc, out, _ = run(q(text, PUSH_OPTIONS))
+        reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+        results.append((decision(out) == "deny" and "reason is missing" in q1,
+                        f"A7l a blank reason then a {sep_name} line break is denied Q1 as missing: {decision(out)} {q1!r}"))
+    rc, out, _ = run(q("Push?\nBasis\n: confirmation-gated - ships a tag to every node at the nightly", PUSH_OPTIONS))
+    results.append((decision(out) == "deny" and "Q1" in codes(out),
+                    f"A7m a line break before the colon is denied Q1: {decision(out)}"))
+    rc, out, _ = run(q("Push?\r\nBasis: confirmation-gated - ships a tag to every node at the nightly\r\n", PUSH_OPTIONS))
+    results.append((decision(out) == "allow", f"A7k a one-line basis with CRLF line ends is allowed: {decision(out)}"))
 
     # ARM B: allows
     expect("B1 the records question with a real basis", run(q(RECORDS_Q, RECORDS_OPTIONS)), "allow")

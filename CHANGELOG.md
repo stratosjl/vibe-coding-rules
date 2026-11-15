@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.6
+
+Patch. The question gate's Q1 no longer reads a Basis line across a line break, and names a blank reason as missing; one test stops writing into the real hook log.
+
+### What changed
+
+- **Q1** (VCR-I-45): `BASIS_RE` searched the whole question under `re.MULTILINE`, and its `\s` also matches a line break, so the next line could be read as the reason, the category or the dash. A valid category with no reason, followed by any line of 15 characters or more, was allowed (present since v1.35.0). The pattern is now matched against one line at a time, split with `str.splitlines()` (LF, CR, CRLF, VT, FF, FS, GS, RS, NEL, U+2028, U+2029), so the whole Basis line, reason included, is one line of the text; a reason wrapped onto the next line is denied with the text below.
+- **Q1** (VCR-I-43): a blank reason (`Basis: scope - ` or `Basis: scope -`) is named as missing («the reason is missing: after the dash, on the Basis line itself, say what differs between the options») instead of «the reason ' ' is 1 character» or a category cut short by backtracking.
+- **Tests:** A7e and A7f (blank reason named as missing), A7g to A7j (a Basis line split after the dash, after the category or after the colon is denied Q1), A7l (a blank reason followed by each of nine other line boundaries) and A7m (a break before the colon) fail on the 1.35.5 hook; A7k (a one-line basis with CRLF line ends is allowed) passes on both. Four one-arm mutants (search the whole text, split on LF only, a non-empty reason group, no blank-reason branch) each turn tests red. A differential of Q1 verdicts over 161,280 generated question shapes found no shape newly allowed, and every changed verdict had a line break inside the 1.35.5 match.
+- **`test-session-start-split.py`** (VCR-I-44): section 8 calls the hook in process after setting `HOME` to a temporary directory, but the module's `LOG_PATH` and `PUBLISH_STATE_PATH` were fixed from the real home at import, so each run wrote one `test-split-over` row into the operator's `~/.claude/methodology-hook.log` (since v1.28.0). Both paths now point at the temporary home for that call, and a new check fails unless the row lands there.
+
+### Known residual
+
+- A blank reason written with a doubled dash and no space (`Basis: scope--`) is still reported as category `scope-` not on the list: the category pattern takes one hyphen of the dash. The deny is correct; narrowing the category pattern would newly allow `Basis:scope--<reason>`, so it is left for a release that decides that shape.
+
 ## v1.35.5
 
 Patch. The question gate's Q4 counts an operator message that is only an image, and three test gaps are closed.
