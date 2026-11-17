@@ -267,6 +267,25 @@ def main() -> int:
                     f"A7m a line break before the colon is denied Q1: {decision(out)}"))
     rc, out, _ = run(q("Push?\r\nBasis: confirmation-gated - ships a tag to every node at the nightly\r\n", PUSH_OPTIONS))
     results.append((decision(out) == "allow", f"A7k a one-line basis with CRLF line ends is allowed: {decision(out)}"))
+    # VCR-I-47: the reason check is a length bound by design (hook docstring); a reason that
+    # is 15 code points of a zero-width space passes. Changing that is a decision, not a fix.
+    rc, out, _ = run(q("Push?\nBasis: confirmation-gated - " + chr(0x200B) * 15, PUSH_OPTIONS))
+    results.append((decision(out) == "allow",
+                    f"A7p the reason bound counts code points, as the docstring states: {decision(out)}"))
+    # VCR-I-48: with two Basis lines Q1 reads the FIRST one, valid or not. A7n is red on a
+    # hook that takes the first VALID line, A7o on one that takes the last line.
+    rc, out, _ = run(q("Push?\nBasis: nonsense - ships a tag to every node at the nightly\n"
+                       "Basis: confirmation-gated - ships a tag to every node at the nightly", PUSH_OPTIONS))
+    reason = (out or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    q1 = next((ln for ln in reason.splitlines() if ln.startswith("- Q1 ")), "")
+    results.append((decision(out) == "deny" and "category 'nonsense' is not on the list" in q1,
+                    f"A7n an invalid first Basis line is read, and a valid second one does not rescue it: "
+                    f"{decision(out)} {q1!r}"))
+    rc, out, _ = run(q("Push?\nBasis: confirmation-gated - ships a tag to every node at the nightly\n"
+                       "Basis: nonsense - a second line the hook does not read", PUSH_OPTIONS))
+    results.append((decision(out) == "allow",
+                    f"A7o a valid first Basis line is read, and an invalid second one does not spoil it: "
+                    f"{decision(out)} {codes(out)}"))
 
     # ARM B: allows
     expect("B1 the records question with a real basis", run(q(RECORDS_Q, RECORDS_OPTIONS)), "allow")

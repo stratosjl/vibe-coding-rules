@@ -19,7 +19,18 @@ holds for any question:
       whose category is one of BASIS_CATEGORIES, with a reason of at least
       MIN_REASON_CHARS characters (since v1.35.4 the deny line names which of
       the two failed; since v1.35.6 the whole line, reason included, is one
-      line of the text, and a blank reason is named as missing);
+      line of the text, and a blank reason is named as missing). With more
+      than one Basis line, the FIRST is read, valid or not. The reason check
+      is a LENGTH bound by design (VCR-I-47): it counts code points after
+      `str.strip()`, so 15 dots or 15 characters that render as nothing (a
+      zero-width space, U+3164 HANGUL FILLER, U+2800 BRAILLE PATTERN BLANK)
+      pass. No property in Python's standard library separates "visible"
+      from blank: U+2800 is a printable symbol (category So) that Unicode
+      does not mark default-ignorable, and the default-ignorable property,
+      which would cover the zero-width characters and U+3164, is not exposed
+      by `unicodedata`. The gate guards the session's own question, whose
+      reader sees the Basis line; Q1 does not claim that a reason says what
+      differs between the options;
   Q2  an option label carries "(Recommended)": inside the delegated remit a
       recommendation is the answer, so a recommended option means the
       question should not be asked;

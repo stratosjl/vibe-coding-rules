@@ -14,6 +14,21 @@ import json
 import re
 import sys
 from pathlib import Path
+import atexit
+import os
+import shutil
+import tempfile
+
+# VCR-I-49: every temp path this suite makes (its own folders, and the hooks' session
+# anchors, written in process and by the subprocesses, which inherit the environment)
+# goes under one private root, removed at exit, so the floor leaves nothing in the real
+# temp directory. Set before any hook module is loaded: the hooks bind ANCHOR_DIR to
+# tempfile.gettempdir() at import, and gettempdir() caches its first answer.
+_FLOOR_TMP = tempfile.mkdtemp(prefix="vcroe-floor-assurance-")
+for _k in ("TMPDIR", "TEMP", "TMP"):
+    os.environ[_k] = _FLOOR_TMP
+tempfile.tempdir = _FLOOR_TMP
+atexit.register(shutil.rmtree, _FLOOR_TMP, True)
 
 ROOT = Path(__file__).resolve().parent
 POLICY = ROOT / "policy" / "assurance.md"

@@ -4,6 +4,17 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.35.7
+
+Patch. The regression floor leaves nothing in the temp directory, a new suite fails if it does, and two question-gate behaviours that no test pinned are now tested and documented.
+
+### What changed
+
+- **Floor temp residue** (VCR-I-49): five suites left entries in the real temp directory on every run: `test-assurance.py` and `test-session-start-split.py` a `mkdtemp` folder each, and the session anchors the hooks wrote for test session ids from `test-chat-claim.py` (16), `test-pre-push-gate-guard.py` (8), `test-session-start-addon.py` (1) and `test-session-start-split.py` (1). Each of the five now points `TMPDIR`, `TEMP`, `TMP` and `tempfile.tempdir` at one private root before any hook module is loaded, and removes it at exit; the subprocesses inherit it. Nothing already left in a temp directory is removed: live sessions keep their anchors there under the same prefix.
+- **New suite `test-floor-temp-residue.py`**: runs every other floor suite with an empty temp directory and fails on anything left in it. On the 1.35.6 suites it fails on exactly those five. Its controls: a planted script that leaves a folder is reported, and one that cleans up is not. It cannot see a literal `/tmp/...` path a suite builds without the temp-directory variables; proven on Linux, not run on Windows.
+- **Q1, two Basis lines** (VCR-I-48): Q1 reads the first Basis line, valid or not, as the docstring said; no test asserted it. A7n (an invalid first line is not rescued by a valid second one) fails on a hook that takes the first valid line, and A7n and A7o (a valid first line is not spoiled by an invalid second one) fail on one that takes the last line.
+- **Q1, the reason bound** (VCR-I-47): the reason check is a length of at least 15 code points after `str.strip()`, so 15 dots, or 15 characters that render as nothing, pass. This is now stated in the hook docstring as the intended bound, and A7p pins it. No property in Python's standard library separates visible from blank characters (U+2800 BRAILLE PATTERN BLANK is a printable symbol that Unicode does not mark default-ignorable, and `unicodedata` does not expose the default-ignorable property), so a "visible characters only" rule would rest on a hand-kept list; the gate guards the session's own question, and its reader sees the Basis line. No behaviour of the hook changed.
+
 ## v1.35.6
 
 Patch. The question gate's Q1 no longer reads a Basis line across a line break, and names a blank reason as missing; one test stops writing into the real hook log.
