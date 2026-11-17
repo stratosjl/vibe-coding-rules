@@ -63,6 +63,24 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 import atexit
+import stat
+
+
+def _force_rmtree(path: "str | Path") -> None:
+    """Remove a tree, read-only files included (v1.36.1, VCR-I-53). The suite builds git
+    repositories, and on Windows git writes object files read-only, which
+    shutil.rmtree(ignore_errors=True) silently leaves behind. Clearing the bit first
+    works on every Python version, unlike rmtree's onerror/onexc split."""
+    if not os.path.exists(path):
+        return
+    for dirpath, dirnames, filenames in os.walk(path):
+        for name in dirnames + filenames:
+            try:
+                os.chmod(os.path.join(dirpath, name),
+                         stat.S_IWRITE | stat.S_IREAD | (stat.S_IEXEC if name in dirnames else 0))
+            except OSError:
+                pass
+    shutil.rmtree(path, ignore_errors=True)
 
 # VCR-I-49: every temp path this suite makes (its own folders, and the hooks' session
 # anchors, written in process and by the subprocesses, which inherit the environment)
@@ -73,7 +91,7 @@ _FLOOR_TMP = tempfile.mkdtemp(prefix="vcroe-floor-chat-claim-")
 for _k in ("TMPDIR", "TEMP", "TMP"):
     os.environ[_k] = _FLOOR_TMP
 tempfile.tempdir = _FLOOR_TMP
-atexit.register(shutil.rmtree, _FLOOR_TMP, True)
+atexit.register(_force_rmtree, _FLOOR_TMP)
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 SESSION_START = PLUGIN_ROOT / "hooks" / "session-start.py"
@@ -1118,8 +1136,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         case_stop_idle_demote_writer_to_reader(home, tmp)
         case_writer_no_demote_within_idle_threshold(home, tmp)
     finally:
-        shutil.rmtree(home, ignore_errors=True)
-        shutil.rmtree(tmp, ignore_errors=True)
+        _force_rmtree(home)
+        _force_rmtree(tmp)
     print(f"\nResults: {PASS} pass, {FAIL} fail, {SKIPPED} skipped")
     for f in FAILURES:
         print(f"  - FAIL  {f}")

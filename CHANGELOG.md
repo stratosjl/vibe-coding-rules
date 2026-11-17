@@ -4,6 +4,20 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.36.1
+
+Patch. Three floor faults that show only on Windows: the temp-residue suite counted a not-runnable suite as failed, a suite's cleanup left read-only git objects behind, and one in-process test wrote a chat claim into the real home. No hook, command, methodology or policy file changes.
+
+### What changed
+
+- **Not runnable is not failed** (VCR-I-52): `test-floor-temp-residue.py` required exit 0 from every suite, so a suite that reports NOT-RUNNABLE (exit 3, for example `test-chat-claim.py` where its `boot_id` case cannot run) was counted as a failure and the guard could never pass there. It now reads each suite's exit under the T2 exit-code contract, reports a not-runnable suite as such and still checks its residue, and exits 1 on any failure, else 3 if a suite was not runnable, else 0 (`--allow-skips` turns the 3 into 0). New controls: planted scripts exiting 0, 3 and 1 read as passed, not runnable and failed through the same function the suite loop uses.
+- **Read-only leftovers** (VCR-I-53): `test-chat-claim.py` builds git repositories under its private temp root. Git writes object files read-only on Windows, and `shutil.rmtree(..., ignore_errors=True)` leaves them without a word, so the VCR-I-49 cleanup did not hold there and the residue guard's own scratch root survived for the same reason. Both now clear the read-only bit before removing a tree. New controls: the guard removes a planted tree holding a read-only file, and fails if its own scratch root is still there at the end.
+- **The real home** (VCR-I-54): section 8 of `test-session-start-split.py` calls the SessionStart hook in process after setting `HOME` only. `Path.home()` reads `USERPROFILE` on Windows, so the call wrote a chat claim into the real `~/.claude/projects`. It now sets and restores both. Two new checks, both red before the fix on Windows: no claim at the path the real home would give, and the claim at the same path under the temporary home, removed first because earlier runs in the suite use the same working directory.
+
+### Known cost
+
+- On a platform where a suite skips a case, the residue guard now exits 3, as that suite does. Pass `--allow-skips` to accept it.
+
 ## v1.36.0
 
 Minor. The SessionStart hook no longer imports a machine-local addon module; the documented extension point is removed.

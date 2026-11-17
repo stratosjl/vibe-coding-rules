@@ -227,6 +227,7 @@ def main() -> int:
     from contextlib import redirect_stdout
     original = M.load_slice
     old_home = os.environ.get("HOME")
+    old_userprofile = os.environ.get("USERPROFILE")
     sys_stdin = sys.stdin
     # v1.35.6 (VCR-I-44): LOG_PATH and PUBLISH_STATE_PATH were fixed from the real home
     # when the module was imported, so setting HOME below does not move them; point
@@ -238,8 +239,17 @@ def main() -> int:
     setattr(M, "LOG_PATH", temp_log)
     setattr(M, "PUBLISH_STATE_PATH", home / ".claude" / "vc-roe-publish-state.json")
     setattr(M, "load_slice", lambda _tier: big)
+    # v1.36.1 (VCR-I-54): the call writes a chat claim under Path.home(), which reads
+    # USERPROFILE on Windows and HOME elsewhere. Where it would land in the REAL home is
+    # computed before the environment changes; afterwards it must be absent there and
+    # present in the temporary home.
+    real_claim = M.claim_path(cwd)
+    real_claim_existed = real_claim.exists()
+    temp_claim = home / real_claim.relative_to(Path.home())
+    temp_claim.unlink(missing_ok=True)  # earlier subprocess runs use the same cwd
     try:
         os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)  # Path.home() on Windows (VCR-I-54)
         sys.stdin = io.StringIO(json.dumps({"session_id": "test-split-over", "cwd": str(cwd)}))
         os.environ["CLAUDE_TIER"] = "T3"
         buf = io.StringIO()
@@ -251,14 +261,21 @@ def main() -> int:
         logged = temp_log.read_text(encoding="utf-8") if temp_log.exists() else ""
         check('"test-split-over"' in logged,
               "the in-process call logs to the temporary home, not the real one (VCR-I-44)")
+        check(real_claim_existed or not real_claim.exists(),
+              f"the in-process call writes no chat claim into the real home (VCR-I-54): {real_claim}")
+        check(temp_claim.is_file(),
+              f"the in-process call's chat claim lands in the temporary home (VCR-I-54): {temp_claim}")
     finally:
         setattr(M, "LOG_PATH", old_paths[0])
         setattr(M, "PUBLISH_STATE_PATH", old_paths[1])
         setattr(M, "load_slice", original)
         sys.stdin = sys_stdin
         os.environ.pop("CLAUDE_TIER", None)
-        if old_home is not None:
-            os.environ["HOME"] = old_home
+        for _k, _v in (("HOME", old_home), ("USERPROFILE", old_userprofile)):
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
         try:
             anchor_for("test-split-over").unlink()
         except OSError:
