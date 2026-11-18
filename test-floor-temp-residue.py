@@ -20,7 +20,16 @@ Controls, run first:
     failed, through the same function the suite loop uses;
   - a read-only file is removed by this guard's own cleanup (v1.36.1, VCR-I-53:
     on Windows git writes object files read-only, and
-    `shutil.rmtree(ignore_errors=True)` silently leaves them).
+    `shutil.rmtree(ignore_errors=True)` silently leaves them);
+  - this guard's own exit code (v1.36.2, VCR-I-56): the guard is run as a
+    child with `--suites-dir` over planted suites exiting 0; 0 and 3; 0 and 3
+    with `--allow-skips`; 3 and 1; and none, and must exit 0, 3, 0, 1 and 1,
+    leaving nothing in the temp directory.
+`--suites-dir DIR` runs only the `test-*.py` files in DIR, skips the controls
+and the floor's suite count, requires at least one suite and says it is not
+the floor. It exists for that control; the floor is the run without it. The
+control marks its child with VCROE_RESIDUE_GUARD_CHILD, and a marked run that
+reaches the controls exits 1 instead of starting children of its own.
 At the end the guard checks that its own scratch root is gone.
 
 What it cannot see, stated so nobody relies on it: a path a suite builds
@@ -82,19 +91,80 @@ def force_rmtree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def residue(cmd: list[str], scratch: Path) -> tuple[int, list[str]]:
+CHILD_ENV = "VCROE_RESIDUE_GUARD_CHILD"
+
+
+def residue(cmd: list[str], scratch: Path, extra_env: "dict[str, str] | None" = None) -> tuple[int, list[str]]:
     """Run `cmd` with an empty temp directory; return its exit code and what it left."""
     tmp = Path(tempfile.mkdtemp(prefix="run-", dir=scratch))
     env = os.environ.copy()
     env.update({"TMPDIR": str(tmp), "TEMP": str(tmp), "TMP": str(tmp)})
+    env.update(extra_env or {})
     r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=600)
     left = sorted(p.name for p in tmp.iterdir())
     return r.returncode, left
 
 
+def run_suites(suites: list[Path], scratch: Path, base: Path) -> None:
+    """Run each suite under `residue` and record its verdict and its leftovers."""
+    for suite in suites:
+        name = suite.relative_to(base)
+        rc, left = residue([sys.executable, str(suite)], scratch)
+        shown = left[:5] + ([f"... {len(left) - 5} more"] if len(left) > 5 else [])
+        verdict = suite_verdict(rc)
+        if verdict == "notrun":
+            NOTRUN.append(f"{name}: exit 3")
+            print(f"  [NRUN] {name}: exit 3 (NOT-RUNNABLE on this platform; not a failure)")
+        else:
+            check(verdict == "pass", f"{name}: exit {rc}")
+        check(left == [], f"{name}: {len(left)} entr{'y' if len(left) == 1 else 'ies'} "
+                          f"left in the temp directory {shown}")
+
+
+def finish(allow_skips: bool) -> int:
+    """Print the summary and return the exit code: 1 on any failure, else 3 if a
+    suite was not runnable (0 with --allow-skips), else 0."""
+    print(f"\n{PASS} pass / {FAIL} fail / {len(NOTRUN)} not runnable")
+    for f in FAILURES:
+        print(f"  - {f}")
+    for n in NOTRUN:
+        print(f"  - NOT-RUNNABLE {n}")
+    if FAIL:
+        return 1
+    if NOTRUN and not allow_skips:
+        print("VERDICT: NOT-RUNNABLE (a suite could not run every case here; pass --allow-skips to accept)")
+        return 3
+    return 0
+
+
+def child(suites_dir: Path, allow_skips: bool) -> int:
+    """--suites-dir: run only the planted suites in `suites_dir` (VCR-I-56). No controls."""
+    print(f"Child run over {suites_dir}: planted suites only; this is not the floor")
+    suites = sorted(suites_dir.glob("test-*.py"))
+    scratch = Path(tempfile.mkdtemp(prefix="vcroe-floor-residue-child-"))
+    try:
+        check(len(suites) >= 1, f"{len(suites)} planted suite(s) found (at least 1 expected)")
+        run_suites(suites, scratch, suites_dir)
+    finally:
+        force_rmtree(scratch)
+    check(not scratch.exists(), "this child run's scratch root is removed")
+    return finish(allow_skips)
+
+
 def main(argv: list[str]) -> int:
     allow_skips = "--allow-skips" in argv
+    if "--suites-dir" in argv:
+        i = argv.index("--suites-dir")
+        if i + 1 >= len(argv):
+            print("--suites-dir needs a directory")
+            return 1
+        return child(Path(argv[i + 1]), allow_skips)
+    if os.environ.get(CHILD_ENV):
+        # A child run reached the controls, which would start children of its own
+        # without bound. Stop here; the parent's control reads this exit as wrong.
+        print(f"{CHILD_ENV} is set but --suites-dir was not handled: refusing to run the controls")
+        return 1
     scratch = Path(tempfile.mkdtemp(prefix="vcroe-floor-residue-"))
     try:
         print("Controls")
@@ -120,38 +190,29 @@ def main(argv: list[str]) -> int:
         os.chmod(ro_file, stat.S_IREAD)
         force_rmtree(ro)
         check(not ro.exists(), "this guard's cleanup removes a tree holding a read-only file")
+        # VCR-I-56: the guard's own exit code, through main's real return path.
+        for plants, extra, want in (((0,), [], 0), ((0, 3), [], 3), ((0, 3), ["--allow-skips"], 0),
+                                    ((3, 1), [], 1), ((), [], 1)):
+            d = scratch / ("suites-" + "-".join(map(str, plants)) + ("-allow" if extra else "") + "-x")
+            d.mkdir()
+            for code in plants:
+                (d / f"test-exit{code}.py").write_text(f"import sys\nsys.exit({code})\n", encoding="utf-8")
+            rc, left = residue([sys.executable, str(SELF), "--suites-dir", str(d), *extra], scratch,
+                               {CHILD_ENV: "1"})
+            shown = "suites exiting " + (", ".join(map(str, plants)) or "none")
+            check(rc == want and left == [],
+                  f"the guard over planted {shown}{' with --allow-skips' if extra else ''} exits {want}: "
+                  f"rc={rc}, {len(left)} left in the temp directory")
 
         suites = sorted(p for p in ROOT.glob("test-*.py") if p.resolve() != SELF)
         suites.append(ROOT / "codex" / "test_continuation.py")
         print(f"Suites: {len(suites)}")
         check(len(suites) >= 17, f"{len(suites)} suites found (at least 17 expected)")
-        for suite in suites:
-            name = suite.relative_to(ROOT)
-            rc, left = residue([sys.executable, str(suite)], scratch)
-            shown = left[:5] + ([f"... {len(left) - 5} more"] if len(left) > 5 else [])
-            verdict = suite_verdict(rc)
-            if verdict == "notrun":
-                NOTRUN.append(f"{name}: exit 3")
-                print(f"  [NRUN] {name}: exit 3 (NOT-RUNNABLE on this platform; not a failure)")
-            else:
-                check(verdict == "pass", f"{name}: exit {rc}")
-            check(left == [], f"{name}: {len(left)} entr{'y' if len(left) == 1 else 'ies'} "
-                              f"left in the temp directory {shown}")
+        run_suites(suites, scratch, ROOT)
     finally:
         force_rmtree(scratch)
     check(not scratch.exists(), "this guard's own scratch root is removed")
-
-    print(f"\n{PASS} pass / {FAIL} fail / {len(NOTRUN)} not runnable")
-    for f in FAILURES:
-        print(f"  - {f}")
-    for n in NOTRUN:
-        print(f"  - NOT-RUNNABLE {n}")
-    if FAIL:
-        return 1
-    if NOTRUN and not allow_skips:
-        print("VERDICT: NOT-RUNNABLE (a suite could not run every case here; pass --allow-skips to accept)")
-        return 3
-    return 0
+    return finish(allow_skips)
 
 
 if __name__ == "__main__":

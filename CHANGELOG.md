@@ -4,6 +4,21 @@ All notable changes to vc-roe (vibe-coding-rules-of-engagement).
 
 The plugin follows semantic versioning. Version is single-source-of-truth in `.claude-plugin/plugin.json`. From v1.22.0 the hooks, the Kimi adapter and the audit harness **derive** it at load; only `kimi.plugin.json` still mirrors it by hand, and `test-version-lockstep.py` blocks a push if it drifts (I-22). Entries below v1.22.0 describe the superseded hand-bumped "9-constant lockstep".
 
+## v1.36.2
+
+Patch. The temp-residue guard's own exit code is now tested (VCR-I-56). No hook, command, methodology or policy file changes.
+
+### What changed
+
+- **The guard's verdict has a control** (VCR-I-56): `test-floor-temp-residue.py` read each suite's exit code under the T2 contract since v1.36.1, but nothing checked the code the guard itself returned, so changing its final `return 3` to `return 0` left it green over a not-runnable suite. A new `--suites-dir DIR` option runs the guard over the `test-*.py` files in DIR only, without the controls or the floor's suite count, requires at least one suite and says it is not the floor. Five new controls run the guard that way over planted suites exiting 0; 0 and 3; 0 and 3 with `--allow-skips`; 3 and 1; and none, and require exit 0, 3, 0, 1 and 1 with nothing left in the temp directory.
+- **No unbounded recursion**: the control marks its child with `VCROE_RESIDUE_GUARD_CHILD`; a marked run that reaches the controls exits 1 instead of starting children of its own.
+- The suite loop and the summary moved into `run_suites` and `finish`, shared by both paths; what the floor run checks is unchanged, plus the five controls (42 to 47 checks on Linux).
+
+### Known limits
+
+- A change that makes the guard's top-level failure branch return 0 also makes the guard itself exit 0; its controls then print `[FAIL]` and the summary counts them, but a reader of the exit code alone sees green. A program cannot assert its own exit code.
+- Run on Linux. The new controls have not yet run on Windows.
+
 ## v1.36.1
 
 Patch. Three floor faults that show only on Windows: the temp-residue suite counted a not-runnable suite as failed, a suite's cleanup left read-only git objects behind, and one in-process test wrote a chat claim into the real home. No hook, command, methodology or policy file changes.
